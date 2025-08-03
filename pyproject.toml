@@ -9,7 +9,7 @@ dependencies = [
     "numpy>=2.3.2",
     "opencv-python>=4.11.0.86",
     "pyopengl>=3.1.9",
-    "pyqt5>=5.15.11",
+    "pyqt6>=6.9.1",
     "requests>=2.32.4",
 ]
 

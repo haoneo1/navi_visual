@@ -3,13 +3,13 @@ import time
 import numpy as np
 import cv2
 import requests
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                            QHBoxLayout, QLabel, QFrame)
-from PyQt5.QtGui import QImage, QPixmap
-from PyQt5.QtCore import QThread, pyqtSignal, Qt, QTimer
+from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPoint
 from OpenGL.GL import *
 from OpenGL.GLU import *
-from PyQt5.QtOpenGL import QGLWidget
+from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
 # 视频流获取线程
 class VideoStreamThread(QThread):
@@ -28,7 +28,7 @@ class VideoStreamThread(QThread):
                 response = requests.get(self.url, timeout=5)
                 if response.status_code == 200:
                     # 将响应内容转换为OpenCV格式
-                    frame = cv2.imdecode(np.frombuffer(response.content, dtype=np.uint8), 
+                    frame = cv2.imdecode(np.frombufferbuffer(response.content, dtype=np.uint8), 
                                         cv2.IMREAD_COLOR)
                     if frame is not None:
                         # 转换为RGB格式（Qt使用RGB，OpenCV默认BGR）
@@ -65,14 +65,14 @@ class CoordinateCalculationThread(QThread):
             self.t += 0.05
             
             # 控制更新频率
-            time.sleep(0.5)
+            time.sleep(0.05)
     
     def stop(self):
         self.running = False
         self.wait()
 
 # OpenGL 3D渲染部件
-class GLWidget(QGLWidget):
+class GLWidget(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.x = 0.0
@@ -80,10 +80,11 @@ class GLWidget(QGLWidget):
         self.z = 0.0
         self.rotation_x = 30
         self.rotation_y = 45
-        self.last_pos = None
+        self.last_pos = QPoint()
+        self.setMinimumSize(640, 480)
         
     def initializeGL(self):
-        # 设置背景色为黑色
+        # 设置背景色为深灰色
         glClearColor(0.1, 0.1, 0.1, 1)
         # 启用深度测试
         glEnable(GL_DEPTH_TEST)
@@ -191,21 +192,20 @@ class GLWidget(QGLWidget):
         self.x = x
         self.y = y
         self.z = z
-        self.updateGL()
+        self.update()
     
     def mousePressEvent(self, event):
         self.last_pos = event.pos()
     
     def mouseMoveEvent(self, event):
-        if self.last_pos:
-            dx = event.x() - self.last_pos.x()
-            dy = event.y() - self.last_pos.y()
-            
-            self.rotation_y += dx
-            self.rotation_x += dy
-            
-            self.last_pos = event.pos()
-            self.updateGL()
+        dx = event.x() - self.last_pos.x()
+        dy = event.y() - self.last_pos.y()
+        
+        self.rotation_y += dx
+        self.rotation_x += dy
+        
+        self.last_pos = event.pos()
+        self.update()
 
 # 主窗口
 class MainWindow(QMainWindow):
@@ -227,26 +227,25 @@ class MainWindow(QMainWindow):
         
         # 左侧：视频显示区域
         video_frame = QFrame()
-        video_frame.setFrameShape(QFrame.StyledPanel)
+        video_frame.setFrameShape(QFrame.Shape.StyledPanel)
         video_layout = QVBoxLayout(video_frame)
         
         self.video_label = QLabel('视频流加载中...')
-        self.video_label.setAlignment(Qt.AlignCenter)
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setMinimumSize(640, 480)
         video_layout.addWidget(self.video_label)
         
         # 右侧：3D显示区域
         gl_frame = QFrame()
-        gl_frame.setFrameShape(QFrame.StyledPanel)
+        gl_frame.setFrameShape(QFrame.Shape.StyledPanel)
         gl_layout = QVBoxLayout(gl_frame)
         
         self.gl_widget = GLWidget()
-        self.gl_widget.setMinimumSize(640, 480)
         gl_layout.addWidget(self.gl_widget)
         
         # 坐标显示标签
         self.coord_label = QLabel('坐标: (0.0, 0.0, 0.0)')
-        self.coord_label.setAlignment(Qt.AlignCenter)
+        self.coord_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         gl_layout.addWidget(self.coord_label)
         
         # 添加到主布局
@@ -269,9 +268,9 @@ class MainWindow(QMainWindow):
         # 将OpenCV帧转换为Qt图像并显示
         height, width, channel = frame.shape
         bytes_per_line = channel * width
-        q_image = QImage(frame.data, width, height, bytes_per_line, QImage.Format_RGB888)
+        q_image = QImage(frame.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
         self.video_label.setPixmap(QPixmap.fromImage(q_image).scaled(
-            self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
     
     def update_coordinates(self, x, y, z):
         # 更新3D视图中的坐标点
@@ -293,4 +292,5 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
+    
