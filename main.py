@@ -8,7 +8,19 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtGui import QImage, QPixmap, QGuiApplication, QPainter, QFont, QPen, QBrush, QPolygonF
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPoint, QTimer, QRectF, QPointF
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+from datetime import datetime
+import os 
 
+
+FRAME_W = 1920
+FRAME_H = 1088
+FRAME_SIZE_NV12 = FRAME_W * FRAME_H *3 //2
+FULL_SCREEN = True
+SPLASH = 'logo.jpg'
+SAVE_CAPTURE = False
+SAVE_ROOT = '/data/capture'
+DUMMY_FRAME = 'dummy_frames.txt'
+DUMMY_PATH = 'dummy_path.txt'
 
 # 启动Logo显示类
 class SplashScreen(QSplashScreen):
@@ -41,22 +53,60 @@ class VideoStreamThread(QThread):
         super().__init__()
         self.url = url
         self.running = False
+        if SAVE_CAPTURE:
+            output_dir = os.path.join(SAVE_ROOT,'capture',datetime.now().strftime("%Y%m%d_%H%M%S"))
+            os.makedirs(output_dir, exist_ok=True)
+            print("save capture to:", output_dir)
+            self.output_dir = output_dir
         
     def run(self):
         self.running = True
+        dummy_filelist = []
+        index = 0
+        if os.path.exists(DUMMY_FRAME):
+            with open(DUMMY_FRAME, 'r') as fp:
+                dummy_filelist = fp.readlines()
+
         while self.running:
             try:
-                response = requests.get(self.url, timeout=5)
-                if response.status_code == 200:
-                    frame = cv2.imdecode(np.frombuffer(response.content, dtype=np.uint8), 
-                                        cv2.IMREAD_COLOR)
-                    if frame is not None:
-                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        self.frame_updated.emit(frame)
-                time.sleep(0.05)
+                if len(dummy_filelist):
+                    file = dummy_filelist[index].removesuffix('\n')
+                    file = os.path.join(SAVE_ROOT, file)
+                    print("load_dummy", file)
+                    frame = cv2.imread(file)
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    self.frame_updated.emit(frame_rgb)
+                    index += 1
+                    time.sleep(0.1)
+
+                else:
+                    response = requests.get(self.url, timeout=5)
+                    if response.status_code == 200:
+                        current_time =datetime.now().strftime("%H%M%S_%f")[:-3]
+                        if len(response.content) != FRAME_SIZE_NV12:
+                            print(f"数据大小不匹配，期望: {FRAME_SIZE_NV12}, 实际: {len(response.content)}")
+                            continue
+                        
+                        frame_data = np.frombuffer(response.content, dtype=np.uint8)
+                        frame_data = frame_data.reshape((FRAME_H*3//2), FRAME_W)
+                        frame_rgb = cv2.cvtColor(frame_data, cv2.COLOR_YUV2RGB_NV12)
+                        # frame_rgb = processor.process_frame(frame_data, FRAME_W, FRAME_H)
+                        self.frame_updated.emit(frame_rgb)
+                        print(f"{current_time} 正在获取视频帧...".format(current_time), end='\r')
+                        if SAVE_CAPTURE:
+                            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+                            filepath = os.path.join(self.output_dir, current_time+'.jpg')
+                            cv2.imwrite(filepath, frame_bgr)
+                    # t_total = time.time()-t_start
+                    # if t_total < 0.1:
+                    #     time.sleep(0.1-t_total)
+                    # elif t_total<0.2:
+                    #     time.sleep(0.2-t_total)
+                    # else:
+                    #     time.sleep(0.5)
             except Exception as e:
-                print(f"视频流获取错误: {e}")
-                time.sleep(1)
+                # print(f"视频流获取错误: {e}")
+                time.sleep(5)
     
     def stop(self):
         self.running = False
@@ -69,22 +119,34 @@ class CoordinateCalculationThread(QThread):
     def __init__(self):
         super().__init__()
         self.running = False
-        self.t = 0
-    
+        self.path = [[2,2,2]]
+        self.index = 0
+
+        if os.path.exists(DUMMY_PATH):
+            with open(DUMMY_PATH) as fp:
+                tmp = []
+                for line in fp.readlines():
+                    data = line.removesuffix('\n').split(',')
+                    tmp.append([float(data[0]),float(data[1]),float(data[2])])
+                self.path = tmp
+        self.total = len(tmp)
+            
     def run(self):
         self.running = True
         while self.running:
-            x = np.sin(self.t) * 0.5
-            y = np.cos(self.t) * 0.5
-            z = np.sin(self.t * 0.7) * 0.3
-            
-            self.coordinates_updated.emit(x, y, z)
-            self.t += 0.05
-            time.sleep(0.05)
+            if self.index < self.total:
+                x,y,z = self.path[self.index]
+                self.coordinates_updated.emit(x, y, z)
+                self.index += 1
+
+            time.sleep(0.2)
     
     def stop(self):
         self.running = False
         self.wait()
+
+    def reset(self):
+        self.index = 0
 
 # 方向指示显示部件
 class DirectionIndicator(QWidget):
@@ -190,26 +252,27 @@ class GLWidget(QOpenGLWidget):
         self.sphere_stacks = 32
         
         # 移动圆锥体参数
-        self.moving_cone_base_radius = 0.06
-        self.moving_cone_height = 0.15
-        self.moving_cone_slices = 32
-        self.moving_cone_stacks = 1
+        self.probe_s_base_radius = 0.06
+        self.probe_s_height = 0.15
+        self.probe_s_slices = 32
+        self.probe_s_stacks = 1
         
         # 固定圆锥体参数及位置
-        self.fixed_cone_base_radius = 0.06
-        self.fixed_cone_height = 0.15
-        self.fixed_cone_slices = 32
-        self.fixed_cone_stacks = 1
-        self.fixed_cone_x = 0.3  # 固定圆锥X坐标
-        self.fixed_cone_y = 0.3  # 固定圆锥Y坐标
-        self.fixed_cone_z = 0.0  # 固定圆锥Z坐标
+        self.probe_t_base_radius = 0.06
+        self.probe_t_height = 0.15
+        self.probe_t_slices = 32
+        self.probe_t_stacks = 1
         
-        # 预设的三个位置
+        # PROBE_TARGET
         self.preset_positions = [
             (0.4, 0.2, 0.1),    # 位置1
             (-0.3, 0.4, -0.2),  # 位置2
             (0.1, -0.3, 0.3)    # 位置3
         ]
+
+        self.probe_t_x = self.preset_positions[0][0]  # 固定圆锥X坐标
+        self.probe_t_y = self.preset_positions[0][1]   # 固定圆锥Y坐标
+        self.probe_t_z = self.preset_positions[0][2]   # 固定圆锥Z坐标
         
         # 方向指示器引用
         self.direction_indicator = None
@@ -275,15 +338,15 @@ class GLWidget(QOpenGLWidget):
         glRotatef(self.rotation_y, 0, 1, 0)
         
         self.draw_coordinate_system()
-        self.draw_center_sphere()       # 中心红色球体
-        self.draw_moving_cone()         # 移动的圆锥体
-        self.draw_fixed_cone()          # 固定的圆锥体
+        self.draw_center_sphere()
+        self.draw_probe_s()
+        self.draw_probe_t()
         
         # 更新方向指示器
         if self.direction_indicator:
             self.direction_indicator.update_positions(
                 (self.x, self.y, self.z),
-                (self.fixed_cone_x, self.fixed_cone_y, self.fixed_cone_z)
+                (self.probe_t_x, self.probe_t_y, self.probe_t_z)
             )
         
         glFlush()
@@ -338,7 +401,7 @@ class GLWidget(QOpenGLWidget):
         glPopMatrix()
     
     # 绘制移动的圆锥体（指向中心）
-    def draw_moving_cone(self):
+    def draw_probe_s(self):
         from OpenGL.GL import (glMaterialfv, GL_FRONT, GL_AMBIENT_AND_DIFFUSE,
                               GL_SPECULAR, GL_SHININESS, glPushMatrix, 
                               glTranslatef, glRotatef, glPopMatrix,
@@ -363,10 +426,10 @@ class GLWidget(QOpenGLWidget):
         self.rotate_to_direction(center_dir)
         glRotatef(180, 0, 1, 0)
         glutSolidCone(
-            self.moving_cone_base_radius,
-            self.moving_cone_height,
-            self.moving_cone_slices,
-            self.moving_cone_stacks
+            self.probe_s_base_radius,
+            self.probe_s_height,
+            self.probe_s_slices,
+            self.probe_s_stacks
         )
         glPopMatrix()
         
@@ -380,14 +443,14 @@ class GLWidget(QOpenGLWidget):
         glEnable(GL_LIGHTING)
     
     # 绘制固定的圆锥体（白色）
-    def draw_fixed_cone(self):
+    def draw_probe_t(self):
         from OpenGL.GL import (glMaterialfv, GL_FRONT, GL_AMBIENT_AND_DIFFUSE,
                               GL_SPECULAR, GL_SHININESS, glPushMatrix, 
                               glTranslatef, glRotatef, glPopMatrix)
         from OpenGL.GLUT import glutSolidCone
         
-        # 固定圆锥指向负Z方向
-        fixed_direction = np.array([0, 0, -1])
+        center_dir = np.array([-self.probe_t_x, -self.probe_t_y, -self.probe_t_z])  
+        fixed_direction = center_dir / np.linalg.norm(center_dir)
         
         # 白色固定圆锥材质
         glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, [1.0, 1.0, 1.0, 1.0])  # 白色
@@ -395,21 +458,21 @@ class GLWidget(QOpenGLWidget):
         glMaterialfv(GL_FRONT, GL_SHININESS, 30.0)
         
         glPushMatrix()
-        glTranslatef(self.fixed_cone_x, self.fixed_cone_y, self.fixed_cone_z)
+        glTranslatef(self.probe_t_x, self.probe_t_y, self.probe_t_z)
         self.rotate_to_direction(fixed_direction)
         glRotatef(180, 0, 1, 0)
         glutSolidCone(
-            self.fixed_cone_base_radius,
-            self.fixed_cone_height,
-            self.fixed_cone_slices,
-            self.fixed_cone_stacks
+            self.probe_t_base_radius,
+            self.probe_t_height,
+            self.probe_t_slices,
+            self.probe_t_stacks
         )
         glPopMatrix()
     
     # 设置固定圆锥到指定位置
-    def set_fixed_cone_position(self, position_index):
+    def set_probe_t_position(self, position_index):
         if 0 <= position_index < len(self.preset_positions):
-            self.fixed_cone_x, self.fixed_cone_y, self.fixed_cone_z = self.preset_positions[position_index]
+            self.probe_t_x, self.probe_t_y, self.probe_t_z = self.preset_positions[position_index]
             self.update()
     
     # 辅助方法：计算旋转角度使锥体指向目标方向
@@ -437,8 +500,8 @@ class GLWidget(QOpenGLWidget):
         self.last_pos = event.pos()
     
     def mouseMoveEvent(self, event):
-        dx = event.x() - self.last_pos.x()
-        dy = event.y() - self.last_pos.y()
+        dx = event.position().x() - self.last_pos.x()
+        dy = event.position().y() - self.last_pos.y()
         
         self.rotation_y += dx
         self.rotation_x += dy
@@ -513,9 +576,9 @@ class MainWindow(QMainWindow):
         button_layout = QHBoxLayout(button_frame)
         
         # 三个位置控制按钮
-        self.btn_pos1 = QPushButton("位置1")
-        self.btn_pos2 = QPushButton("位置2")
-        self.btn_pos3 = QPushButton("位置3")
+        self.btn_pos1 = QPushButton("心脏位置 1")
+        self.btn_pos2 = QPushButton("心脏位置 2")
+        self.btn_pos3 = QPushButton("心脏位置 3")
         
         # 设置按钮样式
         self.btn_pos1.setStyleSheet("padding: 10px; font-size: 14px;")
@@ -523,9 +586,12 @@ class MainWindow(QMainWindow):
         self.btn_pos3.setStyleSheet("padding: 10px; font-size: 14px;")
         
         # 绑定按钮事件
-        self.btn_pos1.clicked.connect(lambda: self.gl_widget.set_fixed_cone_position(0))
-        self.btn_pos2.clicked.connect(lambda: self.gl_widget.set_fixed_cone_position(1))
-        self.btn_pos3.clicked.connect(lambda: self.gl_widget.set_fixed_cone_position(2))
+        self.btn_pos1.clicked.connect(lambda: (
+            self.gl_widget.set_probe_t_position(0),
+            self.coord_thread.reset()
+            ))
+        self.btn_pos2.clicked.connect(lambda: self.gl_widget.set_probe_t_position(1))
+        self.btn_pos3.clicked.connect(lambda: self.gl_widget.set_probe_t_position(2))
         
         button_layout.addWidget(self.btn_pos1)
         button_layout.addWidget(self.btn_pos2)
@@ -538,11 +604,11 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(button_frame, 2)
         
         # 添加到主布局
-        main_layout.addWidget(video_frame, 2)
-        main_layout.addWidget(right_container, 3)
+        main_layout.addWidget(video_frame, 3)
+        main_layout.addWidget(right_container, 1)
         
         # 初始化视频流线程
-        self.video_thread = VideoStreamThread("http://192.168.0.39:8080/video_feed")
+        self.video_thread = VideoStreamThread("http://192.168.0.39:8080/raw")
         self.video_thread.frame_updated.connect(self.update_video_frame)
         
         # 初始化坐标计算线程
@@ -553,7 +619,10 @@ class MainWindow(QMainWindow):
         self.video_thread.start()
         self.coord_thread.start()
 
-        self.showFullScreen()
+        if FULL_SCREEN:
+            self.showFullScreen()
+        else:
+            self.resize(800,600)
     
     def update_video_frame(self, frame):
         height, width, channel = frame.shape
@@ -583,23 +652,28 @@ if __name__ == '__main__':
     matplotlib.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
     
     app = QApplication(sys.argv)
-    
+
     # 显示启动Logo
-    splash = SplashScreen()
-    splash.show()
-    splash.raise_()
-    app.processEvents()
+    if SPLASH:
+        splash = SplashScreen(logo_path=SPLASH)
+        splash.show()
+        splash.raise_()
     
+    app.processEvents()
     # 初始化主窗口
     window = MainWindow()
-    window.hide()
-    
-    # 5秒后显示主窗口
-    def show_main_window():
-        splash.close()
+
+    if SPLASH:
+        window.hide()
+        
+        # 5秒后显示主窗口
+        def show_main_window():
+            window.show()
+            splash.close()
+        
+        QTimer.singleShot(5000, show_main_window)
+    else:
         window.show()
-    
-    QTimer.singleShot(1000, show_main_window)
     
     sys.exit(app.exec())
     
