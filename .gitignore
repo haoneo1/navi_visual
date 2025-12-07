@@ -10,3 +10,9 @@ wheels/
 .venv
 .DS_Store
 capture/
+
+# Log files
+logs/
+*.log
+
+.vscode/
