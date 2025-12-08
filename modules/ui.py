@@ -104,7 +104,7 @@ class TitleBar(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "预测")
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "ROT")
 
 
 class ResizableOverlay(QWidget):
@@ -339,7 +339,7 @@ class MainWindow(QMainWindow):
         video_layout = QVBoxLayout(video_container)
         video_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.video_label = DrawableVideoLabel('视频流加载中...')
+        self.video_label = DrawableVideoLabel('Waiting HDMI...')
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setStyleSheet("background-color: #000; color: white; font-size: 16px;")
         video_layout.addWidget(self.video_label)
@@ -372,7 +372,7 @@ class MainWindow(QMainWindow):
         self.overlay.gl_widget = self.gl_widget
         
         # 创建旋转矩阵显示标签（叠加在3D渲染上方）
-        self.rotation_matrix_label = QLabel("旋转矩阵:\n[--, --, --]\n[--, --, --]\n[--, --, --]")
+        self.rotation_matrix_label = QLabel("[--, --, --]\n[--, --, --]\n[--, --, --]")
         self.rotation_matrix_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.rotation_matrix_label.setStyleSheet("color: #00ff00; background-color: rgba(0, 0, 0, 150); padding: 5px; font-family: monospace; font-size: 11px; font-weight: bold;")
         self.rotation_matrix_label.setWordWrap(True)
@@ -492,7 +492,7 @@ class MainWindow(QMainWindow):
         if not self.marking_mode:
             # 进入标记模式
             self.marking_mode = True
-            self.btn_mark.setText("确认")
+            self.btn_mark.setText("Confirm")
             self.video_label.start_drawing()
             logger.info("进入标记模式，请在视频区域绘制矩形")
         else:
@@ -537,7 +537,7 @@ class MainWindow(QMainWindow):
             
             # 退出标记模式
             self.marking_mode = False
-            self.btn_mark.setText("标记")
+            self.btn_mark.setText("Select")
             self.video_label.stop_drawing()
     
     def on_record_clicked(self):
