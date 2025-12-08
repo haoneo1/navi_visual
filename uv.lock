@@ -325,7 +325,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.3.2" },
     { name = "opencv-python", specifier = ">=4.11.0.86" },
     { name = "pyopengl", specifier = ">=3.1.9" },
-    { name = "pyqt6", specifier = ">=6.9.1" },
+    { name = "pyqt6", specifier = ">=6.7" },
     { name = "requests", specifier = ">=2.32.4" },
     { name = "roma", specifier = ">=1.5.4" },
     { name = "tomli-w", specifier = ">=1.0.0" },

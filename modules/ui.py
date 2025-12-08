@@ -2,6 +2,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                            QHBoxLayout, QLabel, QPushButton)
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen
 from PyQt6.QtCore import Qt, QPoint, QRect
+from pathlib import Path
 from .video_thread import VideoStreamThread
 from .gl_widget import GLWidget
 from .logger import get_logger
@@ -221,14 +222,29 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_panel)
         left_layout.setSpacing(15)
         left_layout.setContentsMargins(10, 10, 10, 10)
+
+        # 顶部 Logo
+        logo_label = QLabel()
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_label.setStyleSheet("padding: 5px;")
+        logo_path = Path(__file__).parent.parent / "images" / "logo.png"
+        if logo_path.exists():
+            max_width = 140
+            pixmap = QPixmap(str(logo_path))
+            if not pixmap.isNull():
+                pixmap = pixmap.scaledToWidth(max_width, Qt.TransformationMode.SmoothTransformation)
+                logo_label.setPixmap(pixmap)
+        else:
+            logger.warning(f"Logo 文件不存在: {logo_path}")
+        left_layout.addWidget(logo_label, 0, Qt.AlignmentFlag.AlignCenter)
         
         # 上方：心脏位置按钮
-        position_label = QLabel('心脏位置')
+        position_label = QLabel('Cardiac')
         position_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        position_label.setStyleSheet("font-size: 16px; font-weight: bold; padding: 8px; color: #333;")
+        position_label.setStyleSheet("font-size: 16px; font-weight: bold; padding: 8px; color: #FFF;")
         left_layout.addWidget(position_label)
         
-        self.btn_pos1 = QPushButton("标准4AC")
+        self.btn_pos1 = QPushButton("4AC")
         
         # 设置按钮样式
         button_style = """
@@ -256,15 +272,15 @@ class MainWindow(QMainWindow):
         left_layout.addStretch()
         
         # 下方：功能按钮
-        function_label = QLabel('功能')
+        function_label = QLabel('Controls')
         function_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        function_label.setStyleSheet("font-size: 16px; font-weight: bold; padding: 8px; color: #333;")
+        function_label.setStyleSheet("font-size: 16px; font-weight: bold; padding: 8px; color: #FFF;")
         left_layout.addWidget(function_label)
         
-        self.btn_mark = QPushButton("区域")
-        self.btn_record = QPushButton("记录")
-        self.btn_inference = QPushButton("推理")
-        self.btn_exit = QPushButton("退出")
+        self.btn_mark = QPushButton("Select")
+        self.btn_record = QPushButton("Record")
+        self.btn_inference = QPushButton("Inference")
+        self.btn_exit = QPushButton("Exit")
         
         # 功能按钮样式
         function_button_style = """
