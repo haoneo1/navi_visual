@@ -1,12 +1,12 @@
 [app]
-full_screen = true
-splash = "./pictures/logo.png"
+full_screen = false
+# splash = "./images/logo.png"
 
 [video]
 video_url = "http://192.168.0.39:8080/raw"
 frame_width = 1920
 frame_height = 1088
-fps = 15
+fps = 10
 crop_x = 652
 crop_y = 438
 crop_width = 318

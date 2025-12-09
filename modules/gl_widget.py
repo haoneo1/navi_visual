@@ -32,8 +32,9 @@ class GLWidget(QOpenGLWidget):
         self.probe_t_stacks = 1
         
         # PROBE_TARGET - 预设心脏位置
+        # 固定圆锥放置在 X 轴正向，指向中心球体
         self.preset_positions = [
-            (1,1,0),    # 位置1
+            (1, 0, 0),    # 位置1：沿 X 轴
         ]
 
         self.probe_t_x = self.preset_positions[0][0]  # 固定圆锥X坐标
@@ -48,7 +49,8 @@ class GLWidget(QOpenGLWidget):
         self.probe_g_x = 0.0
         self.probe_g_y = 0.0
         self.probe_g_z = 0.0
-        self.rotation_matrix = None  # 存储旋转矩阵
+        # 默认使用单位矩阵，确保渲染时始终可见
+        self.rotation_matrix = np.eye(3, dtype=float)
     
     def initializeGL(self):
         from OpenGL.GL import glClearColor, glEnable, GL_DEPTH_TEST
@@ -228,21 +230,20 @@ class GLWidget(QOpenGLWidget):
                               GL_SPECULAR, GL_SHININESS, glPushMatrix, 
                               glTranslatef, glRotatef, glPopMatrix)
         from OpenGL.GLUT import glutSolidCone
+        # 通过逆矩阵将固定圆锥方向映射到移动圆锥方向
+        try:
+            rot_inv = np.linalg.inv(self.rotation_matrix)
+        except np.linalg.LinAlgError:
+            rot_inv = np.eye(3, dtype=float)
         
-        if self.rotation_matrix is None:
-            return
-        
-        # 直接使用旋转矩阵的第三列（Z轴方向）作为方向向量
-        # 这与红色圆锥使用 (probe_t_x, probe_t_y, probe_t_z) 作为方向向量的逻辑一致
-        position_dir = np.array([
-            self.rotation_matrix[0, 2],
-            self.rotation_matrix[1, 2],
-            self.rotation_matrix[2, 2]
-        ])
+        # 固定圆锥的基准方向（沿 X 轴指向中心）
+        base_dir = np.array([1.0, 0.0, 0.0])
+        position_dir = rot_inv @ base_dir
         
         if np.linalg.norm(position_dir) < 0.001:
-            return
-        position_dir = position_dir / np.linalg.norm(position_dir)
+            position_dir = base_dir
+        else:
+            position_dir = position_dir / np.linalg.norm(position_dir)
         
         # 绿色圆锥材质
         glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, [0.0, 1.0, 0.0, 1.0])  # 绿色
@@ -293,7 +294,10 @@ class GLWidget(QOpenGLWidget):
     
     def update_rotation_matrix(self, rotation_matrix):
         """更新旋转矩阵，用于计算绿色圆锥位置"""
-        self.rotation_matrix = rotation_matrix
+        if rotation_matrix is None:
+            self.rotation_matrix = np.eye(3, dtype=float)
+        else:
+            self.rotation_matrix = rotation_matrix
         self.update()
     
     def mousePressEvent(self, event):

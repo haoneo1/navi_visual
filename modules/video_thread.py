@@ -42,7 +42,7 @@ def process_frame(url, output_dir=None, analyzer=None):
     start_time = time.perf_counter()
     
     try:
-        response = requests.get(url, timeout=5)
+        response = requests.get(url, timeout=1)
         if response.status_code != 200:
             logger.error(f"HTTP请求失败: {response.status_code}")
             return None, None, (time.perf_counter() - start_time) * 1000
@@ -58,7 +58,6 @@ def process_frame(url, output_dir=None, analyzer=None):
         
         # 根据配置裁剪区域
         crop_region = get_crop_region()
-        frame_for_ai = frame_rgb
         if crop_region:
             x, y, w, h = crop_region
             # 确保裁剪区域在图像范围内
@@ -67,17 +66,19 @@ def process_frame(url, output_dir=None, analyzer=None):
             w = max(1, min(w, FRAME_W - x))
             h = max(1, min(h, FRAME_H - y))
             frame_for_ai = frame_rgb[y:y+h, x:x+w]
+        else:
+            frame_for_ai = frame_rgb
         
         # AI分析（使用裁剪后的图像）
         rotation_matrix = analyzer.analyze(frame_for_ai) if analyzer else None
         
         # 记录旋转矩阵到日志
         if rotation_matrix is not None:
-            matrix_str = "\n".join([
+            matrix_str = ";".join([
                 f"[{row[0]:8.5f}, {row[1]:8.5f}, {row[2]:8.5f}]"
                 for row in rotation_matrix
             ])
-            logger.info(f"AI预测旋转矩阵:\n{matrix_str}")
+            logger.info(f"ROT_AI: {matrix_str}")
         
         # 保存截图（保存裁剪后的图像）
         if SAVE_CAPTURE and output_dir:
@@ -161,4 +162,86 @@ class VideoStreamThread(QThread):
         self.quit()
         self.wait()
         logger.info("视频流线程已完全停止")
+
+
+class VideoFileThread(QThread):
+    """本地 MP4 播放线程"""
+    frame_updated = pyqtSignal(np.ndarray)
+    rotation_matrix_updated = pyqtSignal(np.ndarray)
+    processing_time_updated = pyqtSignal(float)
+    finished_playback = pyqtSignal()
+
+    def __init__(self, file_path):
+        super().__init__()
+        self.file_path = file_path
+        self.running = False
+        self.analyzer = AIAnalyzer()
+
+    def run(self):
+        self.running = True
+        cap = cv2.VideoCapture(self.file_path)
+        if not cap.isOpened():
+            logger.error(f"无法打开视频文件: {self.file_path}")
+            self.finished_playback.emit()
+            return
+
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        fps = fps if fps and fps > 1 else 30.0
+        frame_interval = 1.0 / fps
+
+        logger.info(f"开始播放视频文件: {self.file_path}, FPS: {fps:.2f}")
+
+        while self.running:
+            start_time = time.perf_counter()
+            ret, frame_bgr = cap.read()
+            if not ret:
+                logger.info("视频播放结束")
+                break
+
+            try:
+                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+                # 根据配置裁剪区域
+                crop_region = get_crop_region()
+                if crop_region:
+                    x, y, w, h = crop_region
+                    h_total, w_total, _ = frame_rgb.shape
+                    x = max(0, min(x, w_total - 1))
+                    y = max(0, min(y, h_total - 1))
+                    w = max(1, min(w, w_total - x))
+                    h = max(1, min(h, h_total - y))
+                    frame_for_ai = frame_rgb[y:y + h, x:x + w]
+                else:
+                    frame_for_ai = frame_rgb
+
+                rotation_matrix = self.analyzer.analyze(frame_for_ai) if self.analyzer else None
+
+                if rotation_matrix is not None:
+                    matrix_str = ";".join([
+                        f"[{row[0]:8.5f}, {row[1]:8.5f}, {row[2]:8.5f}]"
+                        for row in rotation_matrix
+                    ])
+                    logger.info(f"ROT_FILE: {matrix_str}")
+
+                elapsed_time = (time.perf_counter() - start_time) * 1000
+
+                self.frame_updated.emit(frame_rgb)
+                if rotation_matrix is not None:
+                    self.rotation_matrix_updated.emit(rotation_matrix)
+                self.processing_time_updated.emit(elapsed_time)
+            except Exception as e:
+                logger.error(f"播放视频帧错误: {e}", exc_info=True)
+
+            # 控制播放速度
+            elapsed = time.perf_counter() - start_time
+            sleep_time = frame_interval - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+        cap.release()
+        self.finished_playback.emit()
+        logger.info("视频文件线程结束")
+
+    def stop(self):
+        self.running = False
 

@@ -27,8 +27,7 @@ class AIAnalyzer:
             transforms.ToPILImage(),
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
-            # transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-            #                    std=[0.229, 0.224, 0.225])
+            transforms.Normalize(mean=[0.0554, 0.0554, 0.0554], std=[0.1291, 0.1291, 0.1291]),
         ])
     
     def _load_model(self):

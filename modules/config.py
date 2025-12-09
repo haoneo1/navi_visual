@@ -77,6 +77,9 @@ def get_splash_duration() -> int:
     """获取启动画面显示时长（毫秒）"""
     return get_app_config('splash_duration', 5000)
 
+def get_show_result() -> bool:
+    return get_app_config("show_result", False)
+
 
 def get_video_url() -> str:
     """获取视频流URL"""
@@ -164,6 +167,49 @@ def save_crop_region(x: int, y: int, width: int, height: int) -> bool:
     config['video']['crop_y'] = y
     config['video']['crop_width'] = width
     config['video']['crop_height'] = height
+    
+    # 写入文件
+    try:
+        with open(CONFIG_FILE, 'wb') as f:
+            tomli_w.dump(config, f)
+        
+        # 清除缓存，强制重新加载
+        _config = None
+        return True
+    except Exception as e:
+        raise IOError(f"保存配置文件失败: {e}")
+
+
+def get_overlay_position() -> Optional[Tuple[int, int, int, int]]:
+    """获取悬浮窗口位置 (x, y, width, height)，如果未配置则返回None"""
+    x = get_app_config('overlay_x')
+    y = get_app_config('overlay_y')
+    width = get_app_config('overlay_width')
+    height = get_app_config('overlay_height')
+    
+    if x is not None and y is not None and width is not None and height is not None:
+        return (int(x), int(y), int(width), int(height))
+    return None
+
+
+def save_overlay_position(x: int, y: int, width: int, height: int) -> bool:
+    """保存悬浮窗口位置到配置文件"""
+    if tomli_w is None:
+        raise ImportError("需要安装 tomli-w 库来写入TOML文件: pip install tomli-w")
+    
+    # 重新加载配置以获取最新内容
+    global _config
+    _config = None
+    config = load_config()
+    
+    # 更新悬浮窗口位置配置
+    if 'app' not in config:
+        config['app'] = {}
+    
+    config['app']['overlay_x'] = x
+    config['app']['overlay_y'] = y
+    config['app']['overlay_width'] = width
+    config['app']['overlay_height'] = height
     
     # 写入文件
     try:

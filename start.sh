@@ -2,9 +2,11 @@
 
 # waiting for 192.168.0.39
 while ! ping -c 1 -W 1 192.168.0.39 >/dev/null 2>&1; do
-    echo 'waiting for service'
+    echo 'waiting for bpi'
     sleep 1
 done
+
+echo 'bpi ok'
 
 # start core-cap & core-gos
 # check and kill 
