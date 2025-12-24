@@ -1,10 +1,18 @@
 """AI分析模块 - 调用network.py进行图像分析"""
 import torch
-import numpy as np
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+    print("Warning: numpy not available, AI analysis will be disabled")
+
 from torchvision import transforms
 from pathlib import Path
 from .logger import get_logger
-from .network import resnet_18_rot
+
+if HAS_NUMPY:
+    from .network import resnet_18_rot
 
 logger = get_logger()
 
@@ -17,15 +25,21 @@ class AIAnalyzer:
     
     def __init__(self, model_path="best.pth"):
         """初始化AI分析器"""
+        if not HAS_NUMPY:
+            self.model = None
+            return
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = None
         self.model_path = model_path
         self._load_model()
-        
+
         # 图像预处理
         self.transform = transforms.Compose([
             transforms.ToPILImage(),
             transforms.Resize((224, 224)),
+            # to numpy array and convert to float32
+            transforms.Lambda(lambda x: np.array(x).astype(np.float32)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.0554, 0.0554, 0.0554], std=[0.1291, 0.1291, 0.1291]),
         ])

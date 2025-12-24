@@ -4,5 +4,8 @@ sync:
 run:
 	uv run main.py
 
+review:
+	uv run review_app.py
+
 venv:
 	. .venv/bin/activate

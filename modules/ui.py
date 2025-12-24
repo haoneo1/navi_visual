@@ -1,6 +1,6 @@
 import subprocess
 
-from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
+from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                            QHBoxLayout, QLabel, QPushButton, QFileDialog)
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen
 from PyQt6.QtCore import Qt, QPoint, QRect, QTimer
@@ -8,7 +8,12 @@ from pathlib import Path
 from .video_thread import VideoStreamThread, VideoFileThread
 from .gl_widget import GLWidget
 from .logger import get_logger
-from .config import get_crop_region, save_crop_region, get_show_result, get_overlay_position, save_overlay_position
+from .config import get_crop_region, save_crop_region, get_show_result, get_overlay_position, save_overlay_position, get_save_root, get_frame_width, get_frame_height, get_fps
+from .data_package import DataPackage
+import requests
+import time
+import threading
+from datetime import datetime
 
 logger = get_logger()
 
@@ -78,6 +83,8 @@ class TitleBar(QWidget):
         self.setStyleSheet("background-color: #2a2a2a; color: white; font-size: 14px; font-weight: bold; padding: 1px;")
         self.dragging = False
         self.drag_offset = QPoint()
+        # allow custom title text
+        self._title_text = "ROT"
     
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -111,7 +118,7 @@ class TitleBar(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter, "ROT")
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter, self._title_text)
     
     def _save_overlay_position(self, overlay):
         """保存悬浮窗口位置到配置文件"""
@@ -248,6 +255,9 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         self.setWindowTitle('Ultrasound Navi App')
         self.setGeometry(100, 100, 1400, 700)
+
+        # 添加状态栏用于显示视频流状态
+        self.statusBar().showMessage("就绪")
         
         # 主布局容器
         central_widget = QWidget()
@@ -343,6 +353,26 @@ class MainWindow(QMainWindow):
                 background-color: #3a9d5a;
             }
         """
+        # 激活（橘色）样式，用于正在运行的模式按钮（record 或 inference）
+        active_button_style = """
+            QPushButton {
+                padding: 15px;
+                font-size: 14px;
+                background-color: #ff9900;
+                color: white;
+                border: none;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #e68a00;
+            }
+            QPushButton:pressed {
+                background-color: #cc7a00;
+            }
+        """
+        # 保存样式到实例以便其它方法修改按钮状态时使用
+        self._function_button_style = function_button_style
+        self._active_button_style = active_button_style
         
         exit_button_style = """
             QPushButton {
@@ -361,9 +391,10 @@ class MainWindow(QMainWindow):
             }
         """
         
-        self.btn_mark.setStyleSheet(function_button_style)
-        self.btn_record.setStyleSheet(function_button_style)
-        self.btn_inference.setStyleSheet(function_button_style)
+        self.btn_mark.setStyleSheet(self._function_button_style)
+        self.btn_record.setStyleSheet(self._function_button_style)
+        # inference按钮暂时设置为普通样式，稍后会根据状态调整
+        self.btn_inference.setStyleSheet(self._function_button_style)
         self.btn_exit.setStyleSheet(exit_button_style)
         self.btn_shutdown.setStyleSheet(exit_button_style)
         # self.btn_open.setStyleSheet(function_button_style)
@@ -381,54 +412,51 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(5)
         
-        # 视频显示区域（带覆盖层）
-        video_container = QWidget()
-        video_container.setStyleSheet("background-color: #000;")
-        video_layout = QVBoxLayout(video_container)
-        video_layout.setContentsMargins(0, 0, 0, 0)
+        # ROT（3D渲染）显示区域作为主区域，视频作为悬浮小窗
+        rot_container = QWidget()
+        rot_container.setStyleSheet("background-color: #000;")
+        rot_layout = QVBoxLayout(rot_container)
+        rot_layout.setContentsMargins(0, 0, 0, 0)
         
+        # 创建3D渲染部件（放在主区域中）
+        self.gl_widget = GLWidget(rot_container)
+        self.gl_widget.setMinimumSize(300, 300)
+        rot_layout.addWidget(self.gl_widget)
+        
+        # 创建可移动、可调整大小的视频悬浮窗口（作为rot_container的子窗口）
+        self.video_overlay = ResizableOverlay(rot_container)
+        self.video_overlay.raise_()
+        self.video_overlay.setGeometry(10, 10, 480, 360)
+
+        # 创建主布局（video overlay）内部结构： title + video label
+        video_overlay_layout = QVBoxLayout(self.video_overlay)
+        video_overlay_layout.setContentsMargins(0, 0, 0, 0)
+        video_overlay_layout.setSpacing(0)
+
+        # 创建标题栏（显示为 Video）
+        self.title_bar = TitleBar(self.video_overlay)
+        self.title_bar._title_text = "Video"
+        video_overlay_layout.addWidget(self.title_bar)
+
+        # 视频标签放在悬浮窗口中
         self.video_label = DrawableVideoLabel('Waiting HDMI...')
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setStyleSheet("background-color: #000; color: white; font-size: 16px;")
-        video_layout.addWidget(self.video_label)
-        
-        # 创建可移动、可调整大小的覆盖层（作为视频容器的子窗口）
-        self.overlay = ResizableOverlay(video_container)
-        self.overlay.raise_()  # 确保覆盖层在视频上方
-        
-        # 保存video_container引用，用于计算右上角位置
-        self.video_container = video_container
-        
-        # 设置覆盖层初始大小（适合3D渲染，位置将在showEvent中设置为右上角）
-        self.overlay.setGeometry(0, 0, 400, 400)
-        
-        # 创建主布局
-        overlay_layout = QVBoxLayout(self.overlay)
-        overlay_layout.setContentsMargins(0, 0, 0, 0)
-        overlay_layout.setSpacing(0)
-        
-        # 创建标题栏
-        self.title_bar = TitleBar(self.overlay)
-        overlay_layout.addWidget(self.title_bar)
-        
-        # 创建3D渲染部件（放在悬浮窗口中）
-        self.gl_widget = GLWidget(self.overlay)
-        self.gl_widget.setMinimumSize(300, 300)
-        overlay_layout.addWidget(self.gl_widget)
-        
-        # 保存引用以便调整大小时更新
-        self.overlay.gl_widget = self.gl_widget
-        
+        video_overlay_layout.addWidget(self.video_label)
+
+        # 保存rot_container引用用于位置计算
+        self.rot_container = rot_container
+
+        # 旋转矩阵标签放在rot_container上（覆盖在GLWidget上方）
         if get_show_result():
-            # 创建旋转矩阵显示标签（叠加在3D渲染上方）
             self.rotation_matrix_label = QLabel("[--, --, --]\n[--, --, --]\n[--, --, --]")
             self.rotation_matrix_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             self.rotation_matrix_label.setStyleSheet("color: #00ff00; background-color: rgba(0, 0, 0, 150); padding: 5px; font-family: monospace; font-size: 11px; font-weight: bold;")
             self.rotation_matrix_label.setWordWrap(True)
-            self.rotation_matrix_label.setParent(self.overlay)
-            self.rotation_matrix_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)  # 允许鼠标事件穿透
-        
-        right_layout.addWidget(video_container)
+            self.rotation_matrix_label.setParent(self.rot_container)
+            self.rotation_matrix_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+        right_layout.addWidget(rot_container)
        
         # 添加到主布局
         main_layout.addWidget(left_panel, 0)  # 左列固定宽度
@@ -451,6 +479,12 @@ class MainWindow(QMainWindow):
         self.current_source = "hdmi"
         self.video_thread = None
         self.start_hdmi_thread()
+        # 默认开启 inference 模式（程序启动时为 inference 模式）
+        self._is_inference = True
+        self._is_recording = False
+        # 确保按钮状态正确显示
+        self._set_button_active(self.btn_inference, True)
+        self._set_button_active(self.btn_record, False)
         
         # 初始化帧尺寸变量（用于坐标转换）
         self.original_frame_size = (1920, 1088)  # 默认值
@@ -467,10 +501,11 @@ class MainWindow(QMainWindow):
     def showEvent(self, event):
         """窗口显示时，显示覆盖层"""
         super().showEvent(event)
-        if hasattr(self, 'overlay'):
-            # 先显示覆盖层
-            self.overlay.show()
-            self.overlay.raise_()
+        if hasattr(self, 'rot_container'):
+            # 先显示视频悬浮层
+            if hasattr(self, 'video_overlay'):
+                self.video_overlay.show()
+                self.video_overlay.raise_()
             
             # 使用QTimer延迟恢复位置，确保窗口完全显示后再恢复
             if not self._overlay_position_restored:
@@ -484,7 +519,8 @@ class MainWindow(QMainWindow):
                 self.rotation_matrix_label.show()
                 self.rotation_matrix_label.raise_()
                 # 设置旋转矩阵标签位置（左上角）
-                overlay_rect = self.overlay.rect()
+                # rotation label anchored to rot_container
+                overlay_rect = self.rot_container.rect()
                 self.rotation_matrix_label.setGeometry(
                     5,
                     self.title_bar_h + 5,
@@ -494,7 +530,7 @@ class MainWindow(QMainWindow):
     
     def _restore_overlay_position(self):
         """恢复悬浮窗口位置（延迟调用，确保窗口完全显示）"""
-        if not hasattr(self, 'overlay') or not hasattr(self, 'video_container'):
+        if not hasattr(self, 'video_overlay') or not hasattr(self, 'rot_container'):
             return
         
         if self._overlay_position_restored:
@@ -504,9 +540,9 @@ class MainWindow(QMainWindow):
         
         # 尝试从配置读取悬浮窗位置
         overlay_pos = get_overlay_position()
-        if overlay_pos and self.video_container:
-            # 使用rect()获取容器大小（overlay是video_container的子窗口，坐标相对于父容器）
-            container_rect = self.video_container.rect()
+        if overlay_pos and self.rot_container:
+            # 使用rect()获取容器大小（video_overlay是rot_container的子窗口，坐标相对于父容器）
+            container_rect = self.rot_container.rect()
             if container_rect.width() > 0 and container_rect.height() > 0:
                 x, y, width, height = overlay_pos
                 # 确保位置在容器范围内
@@ -515,8 +551,8 @@ class MainWindow(QMainWindow):
                 # 确保大小合理
                 width = max(200, min(width, container_rect.width()))
                 height = max(200, min(height, container_rect.height()))
-                self.overlay.setGeometry(x, y, width, height)
-                logger.info(f"恢复悬浮窗口位置: x={x}, y={y}, width={width}, height={height}, 容器大小: {container_rect.width()}x{container_rect.height()}")
+                self.video_overlay.setGeometry(x, y, width, height)
+                logger.info(f"恢复视频悬浮窗口位置: x={x}, y={y}, width={width}, height={height}, 容器大小: {container_rect.width()}x{container_rect.height()}")
             else:
                 # 容器大小无效，延迟重试
                 logger.warning(f"容器大小无效，延迟重试恢复位置: {container_rect.width()}x{container_rect.height()}")
@@ -528,19 +564,19 @@ class MainWindow(QMainWindow):
     
     def _set_default_overlay_position(self):
         """设置默认悬浮窗口位置（右上角）"""
-        if not hasattr(self, 'overlay') or not hasattr(self, 'video_container'):
+        if not hasattr(self, 'video_overlay') or not hasattr(self, 'rot_container'):
             return
         
-        # 使用rect()获取容器大小（overlay是video_container的子窗口，坐标相对于父容器）
-        container_rect = self.video_container.rect()
+        # 使用rect()获取容器大小（video_overlay是rot_container的子窗口，坐标相对于父容器）
+        container_rect = self.rot_container.rect()
         if container_rect.width() > 0 and container_rect.height() > 0:
             overlay_width = 400
             overlay_height = 400
             margin = 5  # 边距
             x = container_rect.width() - overlay_width - margin
             y = margin
-            self.overlay.setGeometry(x, y, overlay_width, overlay_height)
-            logger.info(f"设置默认悬浮窗口位置: x={x}, y={y}, width={overlay_width}, height={overlay_height}, 容器大小: {container_rect.width()}x{container_rect.height()}")
+            self.video_overlay.setGeometry(x, y, overlay_width, overlay_height)
+            logger.info(f"设置默认视频悬浮窗口位置: x={x}, y={y}, width={overlay_width}, height={overlay_height}, 容器大小: {container_rect.width()}x{container_rect.height()}")
         else:
             # 容器大小无效，延迟重试
             logger.warning(f"容器大小无效，延迟重试设置默认位置: {container_rect.width()}x{container_rect.height()}")
@@ -551,15 +587,14 @@ class MainWindow(QMainWindow):
     
     def _validate_overlay_position(self):
         """验证并修正悬浮窗口位置（确保在容器范围内）"""
-        if not hasattr(self, 'overlay') or not hasattr(self, 'video_container'):
+        if not hasattr(self, 'video_overlay') or not hasattr(self, 'rot_container'):
             return
         
-        video_container = self.video_label.parent() if hasattr(self, 'video_label') else None
-        if not video_container:
+        # container is rot_container
+        if not hasattr(self, 'rot_container'):
             return
-        
-        overlay_rect = self.overlay.geometry()
-        container_rect = video_container.geometry()
+        overlay_rect = self.video_overlay.geometry()
+        container_rect = self.rot_container.geometry()
         position_changed = False
         new_x, new_y = overlay_rect.x(), overlay_rect.y()
         
@@ -578,28 +613,46 @@ class MainWindow(QMainWindow):
             position_changed = True
         
         if position_changed:
-            self.overlay.move(new_x, new_y)
+            self.video_overlay.move(new_x, new_y)
             # 保存修正后的位置
             try:
                 save_overlay_position(new_x, new_y, overlay_rect.width(), overlay_rect.height())
-                logger.info(f"修正悬浮窗口位置: x={new_x}, y={new_y}")
+                logger.info(f"修正视频悬浮窗口位置: x={new_x}, y={new_y}")
             except Exception as e:
                 logger.warning(f"保存悬浮窗口位置失败: {e}")
     
     def update_video_frame(self, frame):
-        height, width, channel = frame.shape
-        bytes_per_line = channel * width
-        q_image = QImage(frame.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
-        pixmap = QPixmap.fromImage(q_image).scaled(
-            self.video_label.size(), 
-            Qt.AspectRatioMode.KeepAspectRatio, 
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self.video_label.setPixmap(pixmap)
-        
-        # 保存原始帧尺寸和缩放后的pixmap尺寸用于坐标转换
-        self.original_frame_size = (width, height)
-        self.scaled_pixmap_size = (pixmap.width(), pixmap.height())
+        # 检查是否应该显示视频帧（只有在inference或recording状态下才显示）
+        should_display = getattr(self, '_is_inference', False) or getattr(self, '_is_recording', False)
+
+        if should_display:
+            height, width, channel = frame.shape
+            bytes_per_line = channel * width
+            q_image = QImage(frame.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_image).scaled(
+                self.video_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.video_label.setPixmap(pixmap)
+
+            # 保存原始帧尺寸和缩放后的pixmap尺寸用于坐标转换
+            self.original_frame_size = (width, height)
+            self.scaled_pixmap_size = (pixmap.width(), pixmap.height())
+        else:
+            # 如果不在inference或recording状态，显示停止提示
+            self.video_label.setText("视频已停止")
+            self.video_label.setStyleSheet("background-color: #000; color: #666; font-size: 14px;")
+
+    def _set_button_active(self, btn, active: bool):
+        """切换按钮到激活/非激活样式"""
+        try:
+            if active:
+                btn.setStyleSheet(self._active_button_style)
+            else:
+                btn.setStyleSheet(self._function_button_style)
+        except Exception:
+            pass
     
     def update_processing_time(self, processing_time_ms):
         """更新处理时间显示（保留但不显示在悬浮窗口）"""
@@ -651,6 +704,20 @@ class MainWindow(QMainWindow):
         thread.processing_time_updated.connect(self.update_processing_time)
         if hasattr(thread, 'finished_playback'):
             thread.finished_playback.connect(self.on_file_finished)
+        # 连接数据包保存完成信号（如果线程支持）
+        try:
+            if hasattr(thread, 'package_saved'):
+                thread.package_saved.connect(self._on_package_saved)
+        except Exception:
+            pass
+        # 连接线程保护信号
+        try:
+            if hasattr(thread, 'thread_error'):
+                thread.thread_error.connect(self.on_video_thread_error)
+            if hasattr(thread, 'thread_recovered'):
+                thread.thread_recovered.connect(self.on_video_thread_recovered)
+        except Exception:
+            pass
     
     def stop_video_thread(self):
         """停止当前视频线程"""
@@ -744,13 +811,155 @@ class MainWindow(QMainWindow):
     def on_record_clicked(self):
         """记录按钮点击事件"""
         logger.info("用户点击了记录按钮")
-        # TODO: 实现记录功能
+
+        # 切换录制状态：点击开始录制，再次点击停止并保存
+        if not getattr(self, '_is_recording', False):
+            # 开始录制
+            self._is_recording = True
+            self.btn_record.setText("Stop")
+            # 录制与推理互斥：如果当前正在 inference，先禁用 inference，但保留视频流线程用于更新UI与录制
+            if getattr(self, '_is_inference', False):
+                try:
+                    if self.video_thread:
+                        self.video_thread.enable_analyzer(False)
+                except Exception:
+                    pass
+                self._is_inference = False
+                # 将 inference 按钮恢复为非激活样式
+                self._set_button_active(self.btn_inference, False)
+            # 将 record 按钮设为激活样式（橘色）
+            self._set_button_active(self.btn_record, True)
+
+            save_root = get_save_root()
+            # Ensure directory exists
+            try:
+                Path(save_root).mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                logger.error(f"创建保存目录失败: {save_root}, {e}", exc_info=True)
+                self._is_recording = False
+                self.btn_record.setText("Record")
+                return
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_path = str(Path(save_root) / f"{timestamp}.upkg")
+
+            width = get_frame_width()
+            height = get_frame_height()
+            fps = get_fps()
+
+            package = DataPackage(save_path, image_type='nv12', width=width, height=height, realtime=True)
+            try:
+                package.start_recording()
+            except Exception as e:
+                logger.error(f"启动数据包录制失败: {e}", exc_info=True)
+                self._is_recording = False
+                self.btn_record.setText("Record")
+                return
+
+            # 保存引用并通过 VideoStreamThread 写入（避免重复 HTTP 拉取且保证 UI 更新不丢帧）
+            self._record_package = package
+            try:
+                if self.video_thread:
+                    self.video_thread.start_recording_package(package)
+                else:
+                    # 没有视频线程时回退到旧逻辑（不推荐）
+                    logger.warning("没有活动的视频线程，录制可能无法进行")
+            except Exception as e:
+                logger.error(f"开始写入数据包失败: {e}", exc_info=True)
+                self._is_recording = False
+                self._set_button_active(self.btn_record, False)
+                self.btn_record.setText("Record")
+                return
+        else:
+            # 停止录制：通知 VideoStreamThread 停止写入并异步保存包
+            logger.info("停止录制请求")
+            try:
+                if self.video_thread:
+                    self.video_thread.stop_recording_package()
+            except Exception as e:
+                logger.error(f"请求停止写入数据包失败: {e}", exc_info=True)
+            # UI 先显示保存中状态，实际保存完成后由 package_saved 信号恢复按钮文本
+            self.btn_record.setText("Saving...")
+            self._is_recording = False
+            self._set_button_active(self.btn_record, False)
+
+            # 如果既没有在inference也没有在recording，清除视频显示
+            if not getattr(self, '_is_inference', False) and not getattr(self, '_is_recording', False):
+                if hasattr(self, 'video_label'):
+                    self.video_label.setText("视频已停止")
+                    self.video_label.setStyleSheet("background-color: #000; color: #666; font-size: 14px;")
     
     def on_inference_clicked(self):
         """推理按钮点击事件"""
         logger.info("用户点击了推理按钮")
-        # TODO: 实现推理功能
-    
+        # 切换 inference 状态
+        if not getattr(self, '_is_inference', False):
+            # 要开启 inference：如果正在录制，先停止录制
+            if getattr(self, '_is_recording', False):
+                logger.info("开启推理前，先停止正在进行的录制")
+                stop_event = getattr(self, '_record_stop_event', None)
+                if stop_event:
+                    stop_event.set()
+                # 让记录线程处理保存（不阻塞）
+                self._is_recording = False
+                self._set_button_active(self.btn_record, False)
+
+            # 启动 HDMI 线程（包含 AI 分析）
+            try:
+                self.start_hdmi_thread()
+                self._is_inference = True
+                self._set_button_active(self.btn_inference, True)
+                # 开启inference时显示红色矩形
+                if hasattr(self, 'gl_widget'):
+                    self.gl_widget.set_show_red_rectangle(True)
+            except Exception as e:
+                logger.error(f"启动 inference 失败: {e}", exc_info=True)
+        else:
+            # 关闭 inference：停止视频线程（包含 AI）
+            try:
+                self.stop_video_thread()
+                self._is_inference = False
+                self._set_button_active(self.btn_inference, False)
+                # 关闭inference时隐藏红色矩形
+                if hasattr(self, 'gl_widget'):
+                    self.gl_widget.set_show_red_rectangle(False)
+                # 清除视频显示
+                if hasattr(self, 'video_label'):
+                    self.video_label.setText("视频已停止")
+                    self.video_label.setStyleSheet("background-color: #000; color: #666; font-size: 14px;")
+            except Exception as e:
+                logger.error(f"停止 inference 失败: {e}", exc_info=True)
+
+    def _on_package_saved(self, path: str):
+        """DataPackage 保存完成回调（在视频线程中发出）"""
+        logger.info(f"数据包保存完成: {path}")
+        try:
+            QTimer.singleShot(0, lambda: self.btn_record.setText("Record"))
+        except Exception:
+            pass
+
+    def on_video_thread_error(self, error_msg: str):
+        """视频线程错误处理"""
+        logger.error(f"视频线程错误: {error_msg}")
+        # 在状态栏显示错误信息（如果有状态栏的话）
+        try:
+            if hasattr(self, 'statusBar'):
+                self.statusBar().showMessage(f"视频流错误: {error_msg}", 5000)  # 显示5秒
+        except Exception:
+            pass
+
+        # 可以在这里添加更多用户通知，比如弹窗或声音提示
+        # 例如：QMessageBox.warning(self, "视频流错误", error_msg)
+
+    def on_video_thread_recovered(self):
+        """视频线程恢复处理"""
+        logger.info("视频线程已恢复正常")
+        try:
+            if hasattr(self, 'statusBar'):
+                self.statusBar().showMessage("视频流已恢复正常", 3000)  # 显示3秒
+        except Exception:
+            pass
+
     def on_open_clicked(self):
         """打开本地MP4文件并播放"""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -789,49 +998,47 @@ class MainWindow(QMainWindow):
     
     def update_overlay_labels(self):
         """更新悬浮窗内标签位置"""
-        if hasattr(self, 'overlay') and self.overlay.isVisible():
-            # 更新旋转矩阵标签位置（左上角）
-            if hasattr(self, 'rotation_matrix_label'):
-                self.rotation_matrix_label.setGeometry(
-                    5, self.title_bar_h + 5,
-                    self.matrix_label_w, self.matrix_label_h
-                )
+        # update rotation label anchored to rot_container
+        if hasattr(self, 'rot_container') and getattr(self, 'rotation_matrix_label', None) is not None:
+            self.rotation_matrix_label.setGeometry(
+                5, self.title_bar_h + 5,
+                self.matrix_label_w, self.matrix_label_h
+            )
     
     def resizeEvent(self, event):
         """窗口大小改变时，调整覆盖层位置"""
         super().resizeEvent(event)
         # 如果位置还没有恢复，尝试恢复
-        if hasattr(self, 'overlay') and hasattr(self, '_overlay_position_restored'):
+        if hasattr(self, 'video_overlay') and hasattr(self, '_overlay_position_restored'):
             if not self._overlay_position_restored:
                 QTimer.singleShot(50, self._restore_overlay_position)
         
         # 确保覆盖层在视频容器内
-        if hasattr(self, 'overlay') and self.overlay.isVisible():
-            video_container = self.video_label.parent()
-            if video_container:
-                overlay_rect = self.overlay.geometry()
-                container_rect = video_container.geometry()
-                position_changed = False
-                # 如果覆盖层超出容器，调整位置
-                if overlay_rect.right() > container_rect.right():
-                    new_x = container_rect.right() - overlay_rect.width()
-                    self.overlay.move(new_x, overlay_rect.top())
-                    position_changed = True
-                if overlay_rect.bottom() > container_rect.bottom():
-                    new_y = container_rect.bottom() - overlay_rect.height()
-                    self.overlay.move(overlay_rect.left(), new_y)
-                    position_changed = True
-                # 如果位置被调整，保存新位置
-                if position_changed:
-                    try:
-                        x = self.overlay.x()
-                        y = self.overlay.y()
-                        width = self.overlay.width()
-                        height = self.overlay.height()
-                        save_overlay_position(x, y, width, height)
-                        logger.info(f"窗口大小改变，调整并保存悬浮窗口位置: x={x}, y={y}, width={width}, height={height}")
-                    except Exception as e:
-                        logger.warning(f"保存悬浮窗口位置失败: {e}")
+        # ensure video_overlay remains within rot_container
+        if hasattr(self, 'video_overlay') and self.video_overlay.isVisible() and hasattr(self, 'rot_container'):
+            overlay_rect = self.video_overlay.geometry()
+            container_rect = self.rot_container.geometry()
+            position_changed = False
+            # 如果覆盖层超出容器，调整位置
+            if overlay_rect.right() > container_rect.right():
+                new_x = container_rect.right() - overlay_rect.width()
+                self.video_overlay.move(new_x, overlay_rect.top())
+                position_changed = True
+            if overlay_rect.bottom() > container_rect.bottom():
+                new_y = container_rect.bottom() - overlay_rect.height()
+                self.video_overlay.move(overlay_rect.left(), new_y)
+                position_changed = True
+            # 如果位置被调整，保存新位置
+            if position_changed:
+                try:
+                    x = self.video_overlay.x()
+                    y = self.video_overlay.y()
+                    width = self.video_overlay.width()
+                    height = self.video_overlay.height()
+                    save_overlay_position(x, y, width, height)
+                    logger.info(f"窗口大小改变，调整并保存视频悬浮窗口位置: x={x}, y={y}, width={width}, height={height}")
+                except Exception as e:
+                    logger.warning(f"保存悬浮窗口位置失败: {e}")
             # 更新标签位置
             self.update_overlay_labels()
 

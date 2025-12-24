@@ -1,6 +1,13 @@
-import numpy as np
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+    print("Warning: numpy not available, 3D rendering will be limited")
+
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtCore import QPoint
+from .config import get_3d_view_rotation, save_3d_view_rotation
 
 class GLWidget(QOpenGLWidget):
     """OpenGL 3D渲染部件"""
@@ -9,10 +16,15 @@ class GLWidget(QOpenGLWidget):
         self.x = 0.0
         self.y = 0.0
         self.z = 0.0
-        self.rotation_x = 30
-        self.rotation_y = 45
+
+        # 从配置文件加载视角角度
+        self.rotation_x, self.rotation_y = get_3d_view_rotation()
+
         self.last_pos = QPoint()
         self.setMinimumSize(640, 480)
+
+        # 控制红色矩形显示的标志
+        self.show_red_rectangle = True
         
         # 球体参数（中心红色球体）
         self.sphere_radius = 0.1
@@ -50,7 +62,10 @@ class GLWidget(QOpenGLWidget):
         self.probe_g_y = 0.0
         self.probe_g_z = 0.0
         # 默认使用单位矩阵，确保渲染时始终可见
-        self.rotation_matrix = np.eye(3, dtype=float)
+        if HAS_NUMPY:
+            self.rotation_matrix = np.eye(3, dtype=float)
+        else:
+            self.rotation_matrix = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
     
     def initializeGL(self):
         from OpenGL.GL import glClearColor, glEnable, GL_DEPTH_TEST
@@ -104,7 +119,11 @@ class GLWidget(QOpenGLWidget):
         
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
-        gluLookAt(0, 0, 2, 0, 0, 0, 0, 1, 0)
+        # 调整相机位置，从斜上方观察，能看到X和Y轴的锥面
+        # 相机位置：(2, 2, 2) - 从斜上方观察
+        # 观察目标：(0, 0, 0) - 原点
+        # 上方向：(0, 1, 0) - Y轴正方向
+        gluLookAt(2, 2, 2, 0, 0, 0, 0, 1, 0)
         
         glRotatef(self.rotation_x, 1, 0, 0)
         glRotatef(self.rotation_y, 0, 1, 0)
@@ -112,9 +131,10 @@ class GLWidget(QOpenGLWidget):
         self.draw_coordinate_system()
         self.draw_center_sphere()
         self.draw_probe_s()
-        self.draw_probe_t()
+        if self.show_red_rectangle:
+            self.draw_probe_t()
         self.draw_probe_g()  # 绘制绿色圆锥
-        
+
         glFlush()
     
     def draw_coordinate_system(self):
@@ -159,10 +179,13 @@ class GLWidget(QOpenGLWidget):
         from OpenGL.GLUT import glutSolidCone
         
         # 计算从圆锥到中心的方向向量
+        if not HAS_NUMPY:
+            return
+
         center_dir = np.array([-self.x, -self.y, -self.z])
         if np.linalg.norm(center_dir) < 0.001:
             return
-            
+
         center_dir = center_dir / np.linalg.norm(center_dir)
         
         # 黄色移动圆锥材质
@@ -196,73 +219,186 @@ class GLWidget(QOpenGLWidget):
         from OpenGL.GL import (glMaterialfv, GL_FRONT, GL_AMBIENT_AND_DIFFUSE,
                               GL_SPECULAR, GL_SHININESS, glPushMatrix, 
                               glTranslatef, glRotatef, glPopMatrix)
-        from OpenGL.GLUT import glutSolidCone
+        from OpenGL.GL import glBegin, glEnd, glVertex3f, glNormal3f, GL_QUADS
+        # draw a rectangular tail (thin box) instead of cone
         
         # 计算从中心指向位置的方向向量
+        if not HAS_NUMPY:
+            return
+
         position_dir = np.array([self.probe_t_x, self.probe_t_y, self.probe_t_z])
         if np.linalg.norm(position_dir) < 0.001:
             return
         position_dir = position_dir / np.linalg.norm(position_dir)
         
-        # 红色固定圆锥材质
+        # 红色尾翼（长方形）参数
+        rect_length = 0.3  # how far the rectangle extends from the center
+        rect_width = 0.12
+        rect_thickness = 0.02
+
+        # 材质（使用同样的材质设置）
         glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, [1.0, 0.0, 0.0, 1.0])  # 红色
         glMaterialfv(GL_FRONT, GL_SPECULAR, [0.9, 0.9, 0.9, 1.0])
         glMaterialfv(GL_FRONT, GL_SHININESS, 30.0)
-        
+
         glPushMatrix()
-        # 先平移到中心（尖端在中心）
+        # place at center and orient so local +Z points toward the position_dir
         glTranslatef(0.0, 0.0, 0.0)
-        # 旋转使圆锥指向位置方向（Z轴正方向指向位置）
         self.rotate_to_direction(position_dir)
-        # 沿Z轴负方向平移高度，使尖端在中心，底部在位置方向
-        glTranslatef(0.0, 0.0, -self.probe_t_height)
-        glutSolidCone(
-            self.probe_t_base_radius,
-            self.probe_t_height,
-            self.probe_t_slices,
-            self.probe_t_stacks
-        )
+        # move the rectangle so its inner edge touches the center and it extends outward along +Z
+        glTranslatef(0.0, 0.0, rect_length / 2.0)
+
+        # draw a thin box centered at origin with size (rect_width x rect_thickness x rect_length)
+        hw = rect_width / 2.0
+        hl = rect_length / 2.0
+        ht = rect_thickness / 2.0
+
+        # Front face (facing +Z)
+        glBegin(GL_QUADS)
+        glNormal3f(0.0, 0.0, 1.0)
+        glVertex3f(-hw, -ht, hl)
+        glVertex3f(hw, -ht, hl)
+        glVertex3f(hw, ht, hl)
+        glVertex3f(-hw, ht, hl)
+        glEnd()
+
+        # Back face (facing -Z)
+        glBegin(GL_QUADS)
+        glNormal3f(0.0, 0.0, -1.0)
+        glVertex3f(-hw, -ht, -hl)
+        glVertex3f(-hw, ht, -hl)
+        glVertex3f(hw, ht, -hl)
+        glVertex3f(hw, -ht, -hl)
+        glEnd()
+
+        # Top face
+        glBegin(GL_QUADS)
+        glNormal3f(0.0, 1.0, 0.0)
+        glVertex3f(-hw, ht, -hl)
+        glVertex3f(-hw, ht, hl)
+        glVertex3f(hw, ht, hl)
+        glVertex3f(hw, ht, -hl)
+        glEnd()
+
+        # Bottom face
+        glBegin(GL_QUADS)
+        glNormal3f(0.0, -1.0, 0.0)
+        glVertex3f(-hw, -ht, -hl)
+        glVertex3f(hw, -ht, -hl)
+        glVertex3f(hw, -ht, hl)
+        glVertex3f(-hw, -ht, hl)
+        glEnd()
+
+        # Left face
+        glBegin(GL_QUADS)
+        glNormal3f(-1.0, 0.0, 0.0)
+        glVertex3f(-hw, -ht, -hl)
+        glVertex3f(-hw, -ht, hl)
+        glVertex3f(-hw, ht, hl)
+        glVertex3f(-hw, ht, -hl)
+        glEnd()
+
+        # Right face
+        glBegin(GL_QUADS)
+        glNormal3f(1.0, 0.0, 0.0)
+        glVertex3f(hw, -ht, -hl)
+        glVertex3f(hw, ht, -hl)
+        glVertex3f(hw, ht, hl)
+        glVertex3f(hw, -ht, hl)
+        glEnd()
+
         glPopMatrix()
     
     # 绘制绿色圆锥体（根据旋转矩阵计算位置）- 尖端在中心
     def draw_probe_g(self):
         from OpenGL.GL import (glMaterialfv, GL_FRONT, GL_AMBIENT_AND_DIFFUSE,
                               GL_SPECULAR, GL_SHININESS, glPushMatrix, 
-                              glTranslatef, glRotatef, glPopMatrix)
-        from OpenGL.GLUT import glutSolidCone
+                              glTranslatef, glRotatef, glPopMatrix, glBegin, glEnd, glVertex3f, glNormal3f, GL_QUADS)
         # 通过逆矩阵将固定圆锥方向映射到移动圆锥方向
+        if not HAS_NUMPY:
+            return
+
         try:
             rot_inv = np.linalg.inv(self.rotation_matrix)
         except np.linalg.LinAlgError:
             rot_inv = np.eye(3, dtype=float)
-        
+
         # 固定圆锥的基准方向（沿 X 轴指向中心）
         base_dir = np.array([1.0, 0.0, 0.0])
         position_dir = rot_inv @ base_dir
-        
+
         if np.linalg.norm(position_dir) < 0.001:
             position_dir = base_dir
         else:
             position_dir = position_dir / np.linalg.norm(position_dir)
         
-        # 绿色圆锥材质
+        # 绿色矩形，表示旋转方向/尾翼
+        rect_length = 0.25
+        rect_width = 0.12
+        rect_thickness = 0.02
+
         glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, [0.0, 1.0, 0.0, 1.0])  # 绿色
         glMaterialfv(GL_FRONT, GL_SPECULAR, [0.9, 0.9, 0.9, 1.0])
         glMaterialfv(GL_FRONT, GL_SHININESS, 30.0)
-        
+
         glPushMatrix()
-        # 先平移到中心（尖端在中心）
         glTranslatef(0.0, 0.0, 0.0)
-        # 旋转使圆锥指向位置方向（Z轴正方向指向位置）
         self.rotate_to_direction(position_dir)
-        # 沿Z轴负方向平移高度，使尖端在中心，底部在位置方向
-        glTranslatef(0.0, 0.0, -self.probe_g_height)
-        glutSolidCone(
-            self.probe_g_base_radius,
-            self.probe_g_height,
-            self.probe_g_slices,
-            self.probe_g_stacks
-        )
+        glTranslatef(0.0, 0.0, rect_length / 2.0)
+
+        hw = rect_width / 2.0
+        hl = rect_length / 2.0
+        ht = rect_thickness / 2.0
+
+        # draw simple box same as red one
+        glBegin(GL_QUADS)
+        glNormal3f(0.0, 0.0, 1.0)
+        glVertex3f(-hw, -ht, hl)
+        glVertex3f(hw, -ht, hl)
+        glVertex3f(hw, ht, hl)
+        glVertex3f(-hw, ht, hl)
+        glEnd()
+
+        glBegin(GL_QUADS)
+        glNormal3f(0.0, 0.0, -1.0)
+        glVertex3f(-hw, -ht, -hl)
+        glVertex3f(-hw, ht, -hl)
+        glVertex3f(hw, ht, -hl)
+        glVertex3f(hw, -ht, -hl)
+        glEnd()
+
+        glBegin(GL_QUADS)
+        glNormal3f(0.0, 1.0, 0.0)
+        glVertex3f(-hw, ht, -hl)
+        glVertex3f(-hw, ht, hl)
+        glVertex3f(hw, ht, hl)
+        glVertex3f(hw, ht, -hl)
+        glEnd()
+
+        glBegin(GL_QUADS)
+        glNormal3f(0.0, -1.0, 0.0)
+        glVertex3f(-hw, -ht, -hl)
+        glVertex3f(hw, -ht, -hl)
+        glVertex3f(hw, -ht, hl)
+        glVertex3f(-hw, -ht, hl)
+        glEnd()
+
+        glBegin(GL_QUADS)
+        glNormal3f(-1.0, 0.0, 0.0)
+        glVertex3f(-hw, -ht, -hl)
+        glVertex3f(-hw, -ht, hl)
+        glVertex3f(-hw, ht, hl)
+        glVertex3f(-hw, ht, -hl)
+        glEnd()
+
+        glBegin(GL_QUADS)
+        glNormal3f(1.0, 0.0, 0.0)
+        glVertex3f(hw, -ht, -hl)
+        glVertex3f(hw, ht, -hl)
+        glVertex3f(hw, ht, hl)
+        glVertex3f(hw, -ht, hl)
+        glEnd()
+
         glPopMatrix()
     
     # 设置固定圆锥到指定位置
@@ -274,14 +410,17 @@ class GLWidget(QOpenGLWidget):
     # 辅助方法：计算旋转角度使锥体指向目标方向
     def rotate_to_direction(self, target_dir):
         from OpenGL.GL import glRotatef
-        
+
+        if not HAS_NUMPY:
+            return
+
         default_dir = np.array([0, 0, -1])
         cross = np.cross(default_dir, target_dir)
         cross_norm = np.linalg.norm(cross)
-        
+
         dot = np.dot(default_dir, target_dir)
         angle = np.arccos(np.clip(dot, -1.0, 1.0)) * 180 / np.pi
-        
+
         if cross_norm > 0.001:
             cross = cross / cross_norm
             glRotatef(angle, cross[0], cross[1], cross[2])
@@ -295,9 +434,17 @@ class GLWidget(QOpenGLWidget):
     def update_rotation_matrix(self, rotation_matrix):
         """更新旋转矩阵，用于计算绿色圆锥位置"""
         if rotation_matrix is None:
-            self.rotation_matrix = np.eye(3, dtype=float)
+            if HAS_NUMPY:
+                self.rotation_matrix = np.eye(3, dtype=float)
+            else:
+                self.rotation_matrix = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
         else:
             self.rotation_matrix = rotation_matrix
+        self.update()
+
+    def set_show_red_rectangle(self, show: bool):
+        """设置是否显示红色矩形（inference模式控制）"""
+        self.show_red_rectangle = show
         self.update()
     
     def mousePressEvent(self, event):
@@ -306,10 +453,17 @@ class GLWidget(QOpenGLWidget):
     def mouseMoveEvent(self, event):
         dx = event.position().x() - self.last_pos.x()
         dy = event.position().y() - self.last_pos.y()
-        
+
         self.rotation_y += dx
         self.rotation_x += dy
-        
+
         self.last_pos = event.pos()
         self.update()
+
+        # 保存当前视角到配置文件
+        try:
+            save_3d_view_rotation(self.rotation_x, self.rotation_y)
+        except Exception as e:
+            # 保存失败时不影响用户操作，只在控制台输出错误
+            print(f"保存3D视角失败: {e}")
 

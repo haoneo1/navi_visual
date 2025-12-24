@@ -1,6 +1,12 @@
 """视频流线程模块"""
 import time
-import numpy as np
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+    print("Warning: numpy not available, video processing will be limited")
+
 import cv2
 import requests
 import os
@@ -20,6 +26,7 @@ from .config import (
 )
 from .ai_analyzer import AIAnalyzer
 from .logger import get_logger
+from .data_package import DataPackage
 
 logger = get_logger()
 
@@ -40,19 +47,24 @@ FRAME_INTERVAL_MS = int(1000.0 / FPS) if FPS > 0 else 1000
 def process_frame(url, output_dir=None, analyzer=None):
     """处理一帧：捕获、转换格式、AI分析"""
     start_time = time.perf_counter()
-    
+
+    if not HAS_NUMPY:
+        return None, None, (time.perf_counter() - start_time) * 1000
+
     try:
         response = requests.get(url, timeout=1)
         if response.status_code != 200:
             logger.error(f"HTTP请求失败: {response.status_code}")
             return None, None, (time.perf_counter() - start_time) * 1000
-        
+
         if len(response.content) != FRAME_SIZE_NV12:
             logger.warning(f"数据大小不匹配，期望: {FRAME_SIZE_NV12}, 实际: {len(response.content)}")
             return None, None, (time.perf_counter() - start_time) * 1000
-        
+
+        # raw bytes（NV12）
+        raw_bytes = response.content
         # 转换格式
-        frame_data = np.frombuffer(response.content, dtype=np.uint8)
+        frame_data = np.frombuffer(raw_bytes, dtype=np.uint8)
         frame_data = frame_data.reshape((FRAME_H*3//2), FRAME_W)
         frame_rgb = cv2.cvtColor(frame_data, cv2.COLOR_YUV2RGB_NV12)
         
@@ -88,7 +100,8 @@ def process_frame(url, output_dir=None, analyzer=None):
             cv2.imwrite(filepath, frame_bgr)
         
         elapsed_time = (time.perf_counter() - start_time) * 1000
-        return frame_rgb, rotation_matrix, elapsed_time
+        # 返回RGB用于UI显示，以及原始NV12 bytes用于记录
+        return frame_rgb, rotation_matrix, elapsed_time, raw_bytes
         
     except Exception as e:
         logger.error(f"获取视频流错误: {e}", exc_info=True)
@@ -97,9 +110,16 @@ def process_frame(url, output_dir=None, analyzer=None):
 
 class VideoStreamThread(QThread):
     """视频流获取线程 - 使用定时器和线程池"""
-    frame_updated = pyqtSignal(np.ndarray)
-    rotation_matrix_updated = pyqtSignal(np.ndarray)  # 旋转矩阵信号
+    if HAS_NUMPY:
+        frame_updated = pyqtSignal(np.ndarray)
+        rotation_matrix_updated = pyqtSignal(np.ndarray)  # 旋转矩阵信号
+    else:
+        frame_updated = pyqtSignal(object)  # 使用object代替np.ndarray
+        rotation_matrix_updated = pyqtSignal(object)  # 使用object代替np.ndarray
     processing_time_updated = pyqtSignal(float)  # 处理时间信号（毫秒）
+    package_saved = pyqtSignal(str)  # 当 DataPackage 保存完成时发出（传递保存路径）
+    thread_error = pyqtSignal(str)  # 线程错误警告信号
+    thread_recovered = pyqtSignal()  # 线程恢复信号
     
     def __init__(self, url):
         super().__init__()
@@ -108,6 +128,15 @@ class VideoStreamThread(QThread):
         self.timer = None
         self.analyzer = AIAnalyzer()
         self.executor = ThreadPoolExecutor(max_workers=2)
+        # 当前正在写入的数据包（由 UI 启动录制时传入）
+        self._recording_package = None
+
+        # 线程保护机制
+        self._consecutive_failures = 0  # 连续失败次数
+        self._max_consecutive_failures = 5  # 最大连续失败次数
+        self._last_successful_frame = time.time()  # 最后成功获取帧的时间
+        self._health_check_timer = None  # 健康检查定时器
+        self._auto_restart_enabled = True  # 自动重启启用标志
         
         # 设置保存目录
         if SAVE_CAPTURE:
@@ -131,26 +160,83 @@ class VideoStreamThread(QThread):
     def _on_frame_processed(self, future):
         """帧处理完成回调"""
         try:
-            frame_rgb, rotation_matrix, processing_time = future.result()
-            
+            # 现在 process_frame 返回 (frame_rgb, rotation_matrix, processing_time_ms, raw_bytes)
+            result = future.result()
+            # 兼容老版本返回三个元素
+            if isinstance(result, tuple) and len(result) == 4:
+                frame_rgb, rotation_matrix, processing_time, raw_bytes = result
+            else:
+                frame_rgb, rotation_matrix, processing_time = result
+                raw_bytes = None
+
+            # 检查帧是否成功获取
             if frame_rgb is not None:
+                # 成功获取帧，重置失败计数
+                self._consecutive_failures = 0
+                self._last_successful_frame = time.time()
+                if self._consecutive_failures > 0:
+                    logger.info("视频流恢复正常")
+                    self.thread_recovered.emit()
+
                 self.frame_updated.emit(frame_rgb)
-            if rotation_matrix is not None:
-                self.rotation_matrix_updated.emit(rotation_matrix)
-            self.processing_time_updated.emit(processing_time)
+                if rotation_matrix is not None:
+                    self.rotation_matrix_updated.emit(rotation_matrix)
+                self.processing_time_updated.emit(processing_time)
+
+                # 如果开启了录制，将原始NV12写入数据包（在工作线程中写，避免阻塞主线程）
+                if self._recording_package is not None and raw_bytes is not None and HAS_NUMPY:
+                    try:
+                        nv12_arr = np.frombuffer(raw_bytes, dtype=np.uint8)
+                        # 使用当前时间作为时间戳
+                        self._recording_package.add_frame(time.time(), nv12_arr, trace={})
+                    except Exception as e:
+                        logger.error(f"写入数据包帧失败: {e}", exc_info=True)
+            else:
+                # 帧获取失败，增加失败计数
+                self._consecutive_failures += 1
+                logger.warning(f"视频帧获取失败，连续失败次数: {self._consecutive_failures}")
+
+                # 如果连续失败次数过多，发出警告
+                if self._consecutive_failures >= self._max_consecutive_failures:
+                    error_msg = f"视频流严重故障：连续{self._consecutive_failures}次获取失败"
+                    logger.error(error_msg)
+                    self.thread_error.emit(error_msg)
+
+                    # 如果启用了自动重启，尝试重启线程
+                    if self._auto_restart_enabled and self.running:
+                        logger.info("尝试自动重启视频流线程...")
+                        self._restart_thread()
+                else:
+                    # 发送空的处理时间信号以保持UI更新
+                    self.processing_time_updated.emit(processing_time)
+
         except Exception as e:
-            logger.error(f"处理帧回调错误: {e}", exc_info=True)
+            # 帧处理异常，增加失败计数
+            self._consecutive_failures += 1
+            logger.error(f"处理帧回调错误 (连续失败{self._consecutive_failures}): {e}", exc_info=True)
+
+            if self._consecutive_failures >= self._max_consecutive_failures:
+                error_msg = f"视频流处理严重故障：连续{self._consecutive_failures}次处理失败"
+                self.thread_error.emit(error_msg)
+
+                if self._auto_restart_enabled and self.running:
+                    self._restart_thread()
     
     def run(self):
         """启动定时器"""
         self.running = True
         logger.info(f"视频流线程启动 - URL: {self.url}, FPS: {FPS}, 间隔: {FRAME_INTERVAL_MS}ms")
-        
+
+        # 启动健康检查定时器（每5秒检查一次）
+        self._health_check_timer = QTimer()
+        self._health_check_timer.timeout.connect(self._health_check)
+        self._health_check_timer.start(5000)  # 5秒检查一次
+
         self.timer = QTimer()
         self.timer.timeout.connect(self._on_timer_timeout)
         self.timer.start(FRAME_INTERVAL_MS)
         self._on_timer_timeout()
-        
+
         self.exec()
         logger.info("视频流线程已停止")
     
@@ -158,16 +244,141 @@ class VideoStreamThread(QThread):
         """停止定时器和线程池"""
         logger.info("正在停止视频流线程...")
         self.running = False
+
+        # 停止健康检查定时器
+        if self._health_check_timer and self._health_check_timer.isActive():
+            self._health_check_timer.stop()
+
         self.executor.shutdown(wait=True)
         self.quit()
         self.wait()
         logger.info("视频流线程已完全停止")
 
+    def start_recording_package(self, package: 'DataPackage'):
+        """开始将原始 NV12 写入传入的 DataPackage（在工作线程中写入）"""
+        try:
+            self._recording_package = package
+            logger.info(f"VideoStreamThread: 开始将帧写入数据包: {package.save_path}")
+        except Exception as e:
+            logger.error(f"start_recording_package 失败: {e}", exc_info=True)
+
+    def stop_recording_package(self):
+        """停止写入并在后台保存数据包"""
+        pkg = self._recording_package
+        self._recording_package = None
+        if pkg is None:
+            return
+
+        def _save_pkg():
+            try:
+                pkg.save()
+                logger.info(f"VideoStreamThread: 数据包保存完成: {pkg.save_path}")
+                try:
+                    # emit signal to notify UI（在非主线程发射信号也可以）
+                    self.package_saved.emit(str(pkg.save_path))
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.error(f"VideoStreamThread: 数据包保存失败: {e}", exc_info=True)
+
+        # 在线程池中保存，避免阻塞线程
+        try:
+            self.executor.submit(_save_pkg)
+        except Exception as e:
+            # 回退到直接保存
+            _save_pkg()
+
+    def enable_analyzer(self, enable: bool):
+        """启用或禁用 AI 分析器（在运行时切换）"""
+        try:
+            if enable:
+                if self.analyzer is None:
+                    self.analyzer = AIAnalyzer()
+                    logger.info("VideoStreamThread: AI 分析器已启用")
+            else:
+                self.analyzer = None
+                logger.info("VideoStreamThread: AI 分析器已禁用")
+        except Exception as e:
+            logger.error(f"enable_analyzer 失败: {e}", exc_info=True)
+
+    def _health_check(self):
+        """健康检查 - 定期检查线程状态"""
+        if not self.running:
+            return
+
+        current_time = time.time()
+        time_since_last_frame = current_time - self._last_successful_frame
+
+        # 如果超过30秒没有成功获取帧，发出警告
+        if time_since_last_frame > 30.0:
+            warning_msg = f"视频流无响应：{time_since_last_frame:.1f}秒未获取到有效帧"
+            logger.warning(warning_msg)
+            self.thread_error.emit(warning_msg)
+
+            # 如果启用了自动重启，尝试重启
+            if self._auto_restart_enabled and self._consecutive_failures >= 3:
+                logger.info("检测到长时间无响应，尝试自动重启视频流线程...")
+                self._restart_thread()
+
+    def _restart_thread(self):
+        """重启视频流线程"""
+        try:
+            logger.info("正在重启视频流线程...")
+
+            # 停止当前定时器
+            if self.timer and self.timer.isActive():
+                self.timer.stop()
+
+            # 停止健康检查定时器
+            if self._health_check_timer and self._health_check_timer.isActive():
+                self._health_check_timer.stop()
+
+            # 关闭线程池
+            if hasattr(self, 'executor'):
+                self.executor.shutdown(wait=False)
+
+            # 等待一小段时间让资源释放
+            time.sleep(0.5)
+
+            # 重置状态
+            self._consecutive_failures = 0
+            self._last_successful_frame = time.time()
+
+            # 重新创建线程池
+            self.executor = ThreadPoolExecutor(max_workers=2)
+
+            # 重新启动健康检查
+            self._health_check_timer = QTimer()
+            self._health_check_timer.timeout.connect(self._health_check)
+            self._health_check_timer.start(5000)
+
+            # 重新启动视频获取定时器
+            self.timer = QTimer()
+            self.timer.timeout.connect(self._on_timer_timeout)
+            self.timer.start(FRAME_INTERVAL_MS)
+
+            logger.info("视频流线程重启完成")
+            self.thread_recovered.emit()
+
+        except Exception as e:
+            error_msg = f"视频流线程重启失败: {e}"
+            logger.error(error_msg, exc_info=True)
+            self.thread_error.emit(error_msg)
+
+    def set_auto_restart(self, enabled: bool):
+        """设置是否启用自动重启功能"""
+        self._auto_restart_enabled = enabled
+        logger.info(f"视频流自动重启功能: {'启用' if enabled else '禁用'}")
+
 
 class VideoFileThread(QThread):
     """本地 MP4 播放线程"""
-    frame_updated = pyqtSignal(np.ndarray)
-    rotation_matrix_updated = pyqtSignal(np.ndarray)
+    if HAS_NUMPY:
+        frame_updated = pyqtSignal(np.ndarray)
+        rotation_matrix_updated = pyqtSignal(np.ndarray)
+    else:
+        frame_updated = pyqtSignal(object)  # 使用object代替np.ndarray
+        rotation_matrix_updated = pyqtSignal(object)  # 使用object代替np.ndarray
     processing_time_updated = pyqtSignal(float)
     finished_playback = pyqtSignal()
 

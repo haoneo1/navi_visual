@@ -196,26 +196,62 @@ def save_overlay_position(x: int, y: int, width: int, height: int) -> bool:
     """保存悬浮窗口位置到配置文件"""
     if tomli_w is None:
         raise ImportError("需要安装 tomli-w 库来写入TOML文件: pip install tomli-w")
-    
+
     # 重新加载配置以获取最新内容
     global _config
     _config = None
     config = load_config()
-    
+
     # 更新悬浮窗口位置配置
     if 'app' not in config:
         config['app'] = {}
-    
+
     config['app']['overlay_x'] = x
     config['app']['overlay_y'] = y
     config['app']['overlay_width'] = width
     config['app']['overlay_height'] = height
-    
+
     # 写入文件
     try:
         with open(CONFIG_FILE, 'wb') as f:
             tomli_w.dump(config, f)
-        
+
+        # 清除缓存，强制重新加载
+        _config = None
+        return True
+    except Exception as e:
+        raise IOError(f"保存配置文件失败: {e}")
+
+
+def get_3d_view_rotation() -> Tuple[float, float]:
+    """获取3D视图旋转角度 (rotation_x, rotation_y)"""
+    rotation_x = get_app_config('rotation_x', 35.0)
+    rotation_y = get_app_config('rotation_y', 45.0)
+    return (float(rotation_x), float(rotation_y))
+
+
+def save_3d_view_rotation(rotation_x: float, rotation_y: float) -> bool:
+    """保存3D视图旋转角度到配置文件"""
+    if tomli_w is None:
+        raise ImportError("需要安装 tomli-w 库来写入TOML文件: pip install tomli-w")
+
+    # 重新加载配置以获取最新内容
+    global _config
+    _config = None
+    config = load_config()
+
+    # 更新3D视图旋转配置
+    if 'app' not in config:
+        config['app'] = {}
+
+    config['app']['rotation_x'] = rotation_x
+    config['app']['rotation_y'] = rotation_y
+
+    # 写入文件
+    try:
+        with open(CONFIG_FILE, 'wb') as f:
+            tomli_w.dump(config, f)
+
         # 清除缓存，强制重新加载
         _config = None
         return True

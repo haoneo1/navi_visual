@@ -52,3 +52,18 @@ def get_logger():
     """获取logger实例"""
     return Logger().logger
 
+
+if __name__ == '__main__':
+    logger = get_logger()
+    logger.info("测试日志")
+    logger.warning("测试警告")
+    logger.error("测试错误")
+    logger.debug("测试调试")
+    logger.critical("测试严重")
+    logger.fatal("测试致命")
+    logger.info("测试日志")
+    logger.warning("测试警告")
+    logger.error("测试错误")
+    logger.debug("测试调试")
+    logger.critical("测试严重")
+    logger.fatal("测试致命")

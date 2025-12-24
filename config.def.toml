@@ -1,16 +1,20 @@
 [app]
-full_screen = false
-# splash = "./images/logo.png"
+full_screen = true
+show_result = false
+overlay_x = 1192
+overlay_y = 14
+overlay_width = 400
+overlay_height = 400
 
 [video]
-video_url = "http://192.168.0.39:8080/raw"
+video_url = "http://localhost:8080/raw"
 frame_width = 1920
 frame_height = 1088
-fps = 10
-crop_x = 652
-crop_y = 438
-crop_width = 318
-crop_height = 306
+fps = 1
+crop_x = 651
+crop_y = 357
+crop_width = 599
+crop_height = 367
 
 [capture]
 save_capture = false
