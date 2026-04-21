@@ -10,16 +10,16 @@ echo 'bpi ok'
 
 # start core-cap & core-gos
 # check and kill 
-ssh user@192.168.0.39 "pgrep -f '\$HOME/core-cap' | xargs -r kill -9"
-ssh user@192.168.0.39 "pgrep -f '\$HOME/core-gos' | xargs -r kill -9"
+ssh root@192.168.0.39 "pgrep -f '\$HOME/core-cap' | xargs -r kill -9"
+ssh root@192.168.0.39 "pgrep -f '\$HOME/core-gos' | xargs -r kill -9"
 
 # strat core-cap
-ssh user@192.168.0.39 "nohup ~/core-cap > ~/core-cap.log 2>&1 &"
+ssh root@192.168.0.39 "nohup ~/core-cap > ~/core-cap.log 2>&1 &"
 
 sleep 1
 
 # start core-gos
-ssh user@192.168.0.39 "nohup ~/core-gos > ~/core-gos.log 2>&1 &"
+ssh root@192.168.0.39 "nohup ~/core-gos > ~/core-gos.log 2>&1 &"
 
 sleep 1
 

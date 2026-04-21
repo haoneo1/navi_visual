@@ -1,79 +1,114 @@
-import subprocess
+"""主界面：左侧控制区 + 右侧 GL 场景与可拖拽视频浮层。
 
-from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
-                           QHBoxLayout, QLabel, QPushButton, QFileDialog)
-from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen
-from PyQt6.QtCore import Qt, QPoint, QRect, QTimer
+整体流程
+--------
+1. ``MainWindow`` 构建 UI 后启动 ``VideoStreamThread``（HDMI），分析器默认关闭，视频帧始终刷新到浮层。
+2. **Record**：在 ``get_save_root()`` 下新建 ``capture_<时间戳>/``，其中 ``video.upkg`` 存 NV12 流，
+   ``viper_poses.jsonl`` 存录制期间从 USB 解析的位姿帧；``meta.json`` 记录分辨率、fps、源 URL 等。
+3. **Exit**：关闭窗口并停止视频与 Viper 轮询。
+4. 视频浮层由 ``ResizableOverlay`` + ``TitleBar`` 拖动/缩放，几何写入配置文件以便下次恢复。
+5. Viper USB 与 ``viper_main.py`` 一致：``ViperUSBComm`` + 守护线程 ``read_usb_data``；解析结果写入
+   ``viper_usb_comm._latest_frame``（等同 ``viper_ui_display`` 的 ``latest_data``），黄探头从该快照更新；
+   ``queue`` 仅用于录制 drain；满队列时 USB 侧丢旧保新，避免 matplotlib 路线下曾出现的「丢新帧不跟手」。
+"""
+
+import json
+import queue
+import shutil
+import sys
+import threading
+import time
+from datetime import datetime
 from pathlib import Path
-from .video_thread import VideoStreamThread, VideoFileThread
+
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer
+from PySide6.QtGui import QImage, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .config import (
+    get_fps,
+    get_frame_height,
+    get_frame_width,
+    get_overlay_position,
+    get_save_root,
+    save_overlay_position,
+)
+from .data_package import DataPackage
 from .gl_widget import GLWidget
 from .logger import get_logger
-from .config import get_crop_region, save_crop_region, get_show_result, get_overlay_position, save_overlay_position, get_save_root, get_frame_width, get_frame_height, get_fps
-from .data_package import DataPackage
-import requests
-import time
-import threading
-from datetime import datetime
+from .video_thread import VideoFileThread, VideoStreamThread
 
 logger = get_logger()
 
+# Viper 位置（毫米）→ OpenGL 场景
+_VIPER_MM_TO_SCENE = 0.015
 
-class DrawableVideoLabel(QLabel):
-    """可绘制矩形的视频标签"""
-    def __init__(self, text="", parent=None):
-        super().__init__(text, parent)
-        self.drawing = False
-        self.start_point = QPoint()
-        self.end_point = QPoint()
-        self.rect = None
-        self.original_pixmap = None
-    
-    def setPixmap(self, pixmap):
-        """保存原始pixmap并显示"""
-        if isinstance(pixmap, QPixmap):
-            self.original_pixmap = pixmap
-            super().setPixmap(pixmap)
-    
-    def start_drawing(self):
-        """开始绘制模式"""
-        self.drawing = True
-        self.rect = None
-        self.update()
-    
-    def stop_drawing(self):
-        """停止绘制模式"""
-        self.drawing = False
-    
-    def get_rect(self):
-        """获取绘制的矩形（相对于视频标签的坐标）"""
-        return self.rect
-    
-    def mousePressEvent(self, event):
-        if self.drawing and event.button() == Qt.MouseButton.LeftButton:
-            self.start_point = event.pos()
-            self.end_point = event.pos()
-            self.rect = None
-    
-    def mouseMoveEvent(self, event):
-        if self.drawing and event.buttons() & Qt.MouseButton.LeftButton:
-            self.end_point = event.pos()
-            self.update()
-    
-    def mouseReleaseEvent(self, event):
-        if self.drawing and event.button() == Qt.MouseButton.LeftButton:
-            self.end_point = event.pos()
-            # 规范化矩形（确保左上角和右下角正确）
-            self.rect = QRect(self.start_point, self.end_point).normalized()
-            self.update()
-    
-    def paintEvent(self, event):
-        """绘制视频和矩形"""
-        super().paintEvent(event)
-        
-        if self.drawing and self.rect:
-            painter = QPainter(self)
-            painter.setPen(QPen(Qt.GlobalColor.red, 2))
-            painter.drawRect(self.rect)
+
+def _ensure_viper_signal_on_path(repo_root: Path) -> bool:
+    """将 ``viper_signal`` 加入 ``sys.path``，以便与 ``viper_main.py`` 相同方式 ``import viper_usb_comm``。"""
+    viper_dir = repo_root / "viper_signal"
+    if not (viper_dir / "viper_usb_comm.py").is_file():
+        logger.warning("未找到 viper_signal 目录或 viper_usb_comm.py: %s", viper_dir)
+        return False
+    p = str(viper_dir.resolve())
+    if p not in sys.path:
+        sys.path.insert(0, p)
+    return True
+
+# MainWindow 按钮样式（集中定义，避免 init 内大段字符串）
+_STYLE_CONTROL_BUTTON = """
+    QPushButton {
+        padding: 15px;
+        font-size: 14px;
+        background-color: #50c878;
+        color: white;
+        border: none;
+        border-radius: 5px;
+    }
+    QPushButton:hover { background-color: #45b369; }
+    QPushButton:pressed { background-color: #3a9d5a; }
+"""
+_STYLE_CONTROL_ACTIVE = """
+    QPushButton {
+        padding: 15px;
+        font-size: 14px;
+        background-color: #ff9900;
+        color: white;
+        border: none;
+        border-radius: 5px;
+    }
+    QPushButton:hover { background-color: #e68a00; }
+    QPushButton:pressed { background-color: #cc7a00; }
+"""
+_STYLE_DANGER_BUTTON = """
+    QPushButton {
+        padding: 15px;
+        font-size: 14px;
+        background-color: #e74c3c;
+        color: white;
+        border: none;
+        border-radius: 5px;
+    }
+    QPushButton:hover { background-color: #c0392b; }
+    QPushButton:pressed { background-color: #a93226; }
+"""
+
+
+def _persist_overlay_geometry(x: int, y: int, width: int, height: int) -> None:
+    try:
+        save_overlay_position(x, y, width, height)
+        logger.debug("保存悬浮窗口位置: x=%s, y=%s, width=%s, height=%s", x, y, width, height)
+    except Exception as e:
+        logger.warning("保存悬浮窗口位置失败: %s", e)
+
 
 class TitleBar(QWidget):
     """标题栏 - 用于拖动窗口"""
@@ -121,16 +156,7 @@ class TitleBar(QWidget):
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter, self._title_text)
     
     def _save_overlay_position(self, overlay):
-        """保存悬浮窗口位置到配置文件"""
-        try:
-            x = overlay.x()
-            y = overlay.y()
-            width = overlay.width()
-            height = overlay.height()
-            save_overlay_position(x, y, width, height)
-            logger.debug(f"保存悬浮窗口位置: x={x}, y={y}, width={width}, height={height}")
-        except Exception as e:
-            logger.warning(f"保存悬浮窗口位置失败: {e}")
+        _persist_overlay_geometry(overlay.x(), overlay.y(), overlay.width(), overlay.height())
 
 
 class ResizableOverlay(QWidget):
@@ -190,22 +216,11 @@ class ResizableOverlay(QWidget):
     def mouseReleaseEvent(self, event):
         if self.resizing:
             self.resizing = False
-            # 调整大小结束时保存位置
             self._save_overlay_position()
-        else:
-            self.resizing = False
-    
+        super().mouseReleaseEvent(event)
+
     def _save_overlay_position(self):
-        """保存悬浮窗口位置到配置文件"""
-        try:
-            x = self.x()
-            y = self.y()
-            width = self.width()
-            height = self.height()
-            save_overlay_position(x, y, width, height)
-            logger.debug(f"保存悬浮窗口位置: x={x}, y={y}, width={width}, height={height}")
-        except Exception as e:
-            logger.warning(f"保存悬浮窗口位置失败: {e}")
+        _persist_overlay_geometry(self.x(), self.y(), self.width(), self.height())
     
     def mouseDoubleClickEvent(self, event):
         """双击切换半透明状态"""
@@ -247,256 +262,262 @@ class MainWindow(QMainWindow):
         self.full_screen = full_screen
         # 先初始化标志，避免在init_ui中访问时出错
         self._overlay_position_restored = False  # 标记是否已恢复悬浮窗口位置
-        self.matrix_label_w = 180
-        self.matrix_label_h = 60
-        self.title_bar_h = 30
+        # Viper：与 viper_main.py 相同对象（见 _start_viper_usb_tracker / _stop_viper_usb）
+        self._viper_queue: queue.Queue | None = None
+        self._viper_comm = None
+        self._viper_read_thread: threading.Thread | None = None
+        self._viper_poll_timer: QTimer | None = None
+        self._viper_pose_fp = None
+        self._record_session_dir: Path | None = None
         self.init_ui()
         
     def init_ui(self):
-        self.setWindowTitle('Ultrasound Navi App')
+        self.setWindowTitle("Ultrasound Navi App")
         self.setGeometry(100, 100, 1400, 700)
-
-        # 添加状态栏用于显示视频流状态
         self.statusBar().showMessage("就绪")
-        
-        # 主布局容器
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(10, 10, 10, 10)
-        
-        # ========== 左列：按钮区域 ==========
-        left_panel = QWidget()
-        left_panel.setMaximumWidth(150)
-        left_panel.setMinimumWidth(150)
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setSpacing(10)
-        left_layout.setContentsMargins(10, 10, 10, 10)
 
-        # 顶部 Logo
-        logo_label = QLabel()
-        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo_label.setStyleSheet("padding: 5px;")
-        logo_path = Path(__file__).parent.parent / "images" / "logo.png"
-        if logo_path.exists():
-            max_width = 100
-            pixmap = QPixmap(str(logo_path))
-            if not pixmap.isNull():
-                pixmap = pixmap.scaledToWidth(max_width, Qt.TransformationMode.SmoothTransformation)
-                logo_label.setPixmap(pixmap)
-        else:
-            logger.warning(f"Logo 文件不存在: {logo_path}")
-        left_layout.addWidget(logo_label, 0, Qt.AlignmentFlag.AlignCenter)
-        
-        
-        # 上方：心脏位置按钮
-        position_label = QLabel('Cardiac')
-        position_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        position_label.setStyleSheet("font-size: 16px; font-weight: bold; padding: 8px; color: #FFF;")
-        left_layout.addWidget(position_label)
-        
-        self.btn_pos1 = QPushButton("4AC")
-        
-        # 设置按钮样式
-        button_style = """
-            QPushButton {
-                padding: 15px;
-                font-size: 14px;
-                background-color: #4a90e2;
-                color: white;
-                border: none;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #357abd;
-            }
-            QPushButton:pressed {
-                background-color: #2a5f8f;
-            }
-        """
-        
-        self.btn_pos1.setStyleSheet(button_style)
-        
-        left_layout.addWidget(self.btn_pos1)
-        
-        # 添加弹性空间
-        left_layout.addStretch()
-        
-        # 下方：功能按钮
-        function_label = QLabel('Controls')
-        function_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        function_label.setStyleSheet("font-size: 16px; font-weight: bold; padding: 8px; color: #FFF;")
-        left_layout.addWidget(function_label)
-        
-        # self.btn_open = QPushButton("Open")
-        self.btn_mark = QPushButton("Select")
-        self.btn_record = QPushButton("Record")
-        self.btn_inference = QPushButton("Inference")
-        self.btn_exit = QPushButton("Exit")
-        self.btn_shutdown = QPushButton("Shutdown")
-        
-        # 功能按钮样式
-        function_button_style = """
-            QPushButton {
-                padding: 15px;
-                font-size: 14px;
-                background-color: #50c878;
-                color: white;
-                border: none;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #45b369;
-            }
-            QPushButton:pressed {
-                background-color: #3a9d5a;
-            }
-        """
-        # 激活（橘色）样式，用于正在运行的模式按钮（record 或 inference）
-        active_button_style = """
-            QPushButton {
-                padding: 15px;
-                font-size: 14px;
-                background-color: #ff9900;
-                color: white;
-                border: none;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #e68a00;
-            }
-            QPushButton:pressed {
-                background-color: #cc7a00;
-            }
-        """
-        # 保存样式到实例以便其它方法修改按钮状态时使用
-        self._function_button_style = function_button_style
-        self._active_button_style = active_button_style
-        
-        exit_button_style = """
-            QPushButton {
-                padding: 15px;
-                font-size: 14px;
-                background-color: #e74c3c;
-                color: white;
-                border: none;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #c0392b;
-            }
-            QPushButton:pressed {
-                background-color: #a93226;
-            }
-        """
-        
-        self.btn_mark.setStyleSheet(self._function_button_style)
-        self.btn_record.setStyleSheet(self._function_button_style)
-        # inference按钮暂时设置为普通样式，稍后会根据状态调整
-        self.btn_inference.setStyleSheet(self._function_button_style)
-        self.btn_exit.setStyleSheet(exit_button_style)
-        self.btn_shutdown.setStyleSheet(exit_button_style)
-        # self.btn_open.setStyleSheet(function_button_style)
-        
-        # left_layout.addWidget(self.btn_open)
-        left_layout.addWidget(self.btn_mark)
-        left_layout.addWidget(self.btn_record)
-        left_layout.addWidget(self.btn_inference)
-        left_layout.addWidget(self.btn_exit)
-        left_layout.addWidget(self.btn_shutdown)
-        
-        # ========== 右列：影像显示区域 ==========
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(5)
-        
-        # ROT（3D渲染）显示区域作为主区域，视频作为悬浮小窗
-        rot_container = QWidget()
-        rot_container.setStyleSheet("background-color: #000;")
-        rot_layout = QVBoxLayout(rot_container)
-        rot_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # 创建3D渲染部件（放在主区域中）
-        self.gl_widget = GLWidget(rot_container)
-        self.gl_widget.setMinimumSize(300, 300)
-        rot_layout.addWidget(self.gl_widget)
-        
-        # 创建可移动、可调整大小的视频悬浮窗口（作为rot_container的子窗口）
-        self.video_overlay = ResizableOverlay(rot_container)
-        self.video_overlay.raise_()
-        self.video_overlay.setGeometry(10, 10, 480, 360)
+        main_layout.addWidget(self._build_left_panel(), 0)
+        main_layout.addWidget(self._build_right_panel(), 1)
 
-        # 创建主布局（video overlay）内部结构： title + video label
-        video_overlay_layout = QVBoxLayout(self.video_overlay)
-        video_overlay_layout.setContentsMargins(0, 0, 0, 0)
-        video_overlay_layout.setSpacing(0)
+        self._connect_action_signals()
+        self._init_stream_state()
+        self._start_viper_usb_tracker()
 
-        # 创建标题栏（显示为 Video）
-        self.title_bar = TitleBar(self.video_overlay)
-        self.title_bar._title_text = "Video"
-        video_overlay_layout.addWidget(self.title_bar)
-
-        # 视频标签放在悬浮窗口中
-        self.video_label = DrawableVideoLabel('Waiting HDMI...')
-        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_label.setStyleSheet("background-color: #000; color: white; font-size: 16px;")
-        video_overlay_layout.addWidget(self.video_label)
-
-        # 保存rot_container引用用于位置计算
-        self.rot_container = rot_container
-
-        # 旋转矩阵标签放在rot_container上（覆盖在GLWidget上方）
-        if get_show_result():
-            self.rotation_matrix_label = QLabel("[--, --, --]\n[--, --, --]\n[--, --, --]")
-            self.rotation_matrix_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            self.rotation_matrix_label.setStyleSheet("color: #00ff00; background-color: rgba(0, 0, 0, 150); padding: 5px; font-family: monospace; font-size: 11px; font-weight: bold;")
-            self.rotation_matrix_label.setWordWrap(True)
-            self.rotation_matrix_label.setParent(self.rot_container)
-            self.rotation_matrix_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-
-        right_layout.addWidget(rot_container)
-       
-        # 添加到主布局
-        main_layout.addWidget(left_panel, 0)  # 左列固定宽度
-        main_layout.addWidget(right_panel, 1)  # 右列占据剩余空间
-        
-        # 绑定按钮事件
-        self.btn_pos1.clicked.connect(lambda: self.gl_widget.set_probe_t_position(0))
-        
-        self.btn_mark.clicked.connect(self.on_mark_clicked)
-        self.btn_record.clicked.connect(self.on_record_clicked)
-        self.btn_inference.clicked.connect(self.on_inference_clicked)
-        self.btn_exit.clicked.connect(self.close)
-        self.btn_shutdown.clicked.connect(self.on_shutdown_clicked)
-        # self.btn_open.clicked.connect(self.on_open_clicked)
-        
-        # 标记模式状态
-        self.marking_mode = False
-        
-        # 当前数据源（hdmi/file）
-        self.current_source = "hdmi"
-        self.video_thread = None
-        self.start_hdmi_thread()
-        # 默认开启 inference 模式（程序启动时为 inference 模式）
-        self._is_inference = True
-        self._is_recording = False
-        # 确保按钮状态正确显示
-        self._set_button_active(self.btn_inference, True)
-        self._set_button_active(self.btn_record, False)
-        
-        # 初始化帧尺寸变量（用于坐标转换）
-        self.original_frame_size = (1920, 1088)  # 默认值
-        self.scaled_pixmap_size = (1920, 1088)  # 默认值
-        
-        # 显示覆盖层（需要在窗口显示后）
         if self.full_screen:
             logger.info("以全屏模式显示主窗口")
             self.showFullScreen()
         else:
             logger.info("以窗口模式显示主窗口")
             self.resize(1200, 800)
+
+    def _build_left_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setFixedWidth(150)
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        logo_label = QLabel()
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_label.setStyleSheet("padding: 5px;")
+        logo_path = Path(__file__).parent.parent / "images" / "logo.png"
+        if logo_path.exists():
+            pixmap = QPixmap(str(logo_path))
+            if not pixmap.isNull():
+                logo_label.setPixmap(
+                    pixmap.scaledToWidth(100, Qt.TransformationMode.SmoothTransformation)
+                )
+        else:
+            logger.warning("Logo 文件不存在: %s", logo_path)
+        layout.addWidget(logo_label, 0, Qt.AlignmentFlag.AlignCenter)
+
+        layout.addStretch()
+
+        self._function_button_style = _STYLE_CONTROL_BUTTON
+        self._active_button_style = _STYLE_CONTROL_ACTIVE
+
+        self.btn_record = QPushButton("Record")
+        self.btn_exit = QPushButton("Exit")
+
+        self.btn_record.setStyleSheet(self._function_button_style)
+        self.btn_exit.setStyleSheet(_STYLE_DANGER_BUTTON)
+
+        layout.addWidget(self.btn_record)
+        layout.addWidget(self.btn_exit)
+        return panel
+
+    def _build_right_panel(self) -> QWidget:
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(5)
+
+        rot_container = QWidget()
+        rot_container.setStyleSheet("background-color: #000;")
+        rot_layout = QVBoxLayout(rot_container)
+        rot_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.gl_widget = GLWidget(rot_container)
+        self.gl_widget.setMinimumSize(300, 300)
+        self.gl_widget.set_show_red_rectangle(False)
+        rot_layout.addWidget(self.gl_widget)
+
+        self.video_overlay = ResizableOverlay(rot_container)
+        self.video_overlay.raise_()
+        self.video_overlay.setGeometry(10, 10, 480, 360)
+
+        overlay_layout = QVBoxLayout(self.video_overlay)
+        overlay_layout.setContentsMargins(0, 0, 0, 0)
+        overlay_layout.setSpacing(0)
+
+        self.title_bar = TitleBar(self.video_overlay)
+        self.title_bar._title_text = "Video"
+        overlay_layout.addWidget(self.title_bar)
+
+        self.video_label = QLabel("Waiting HDMI...")
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_label.setStyleSheet("background-color: #000; color: white; font-size: 16px;")
+        overlay_layout.addWidget(self.video_label)
+
+        self.rot_container = rot_container
+
+        right_layout.addWidget(rot_container)
+        return right_panel
+
+    def _connect_action_signals(self):
+        self.btn_record.clicked.connect(self.on_record_clicked)
+        self.btn_exit.clicked.connect(self.close)
+
+    def _init_stream_state(self):
+        self.current_source = "hdmi"
+        self.video_thread = None
+        self.start_hdmi_thread()
+        self._is_recording = False
+        self._set_button_active(self.btn_record, False)
+        self.original_frame_size = (1920, 1088)
+        self.scaled_pixmap_size = (1920, 1088)
+
+    def _start_viper_usb_tracker(self):
+        """对齐 ``viper_signal/viper_main.py``：Queue(maxsize=10) → ViperUSBComm → Thread(read_usb_data)；
+        此处用主线程 ``QTimer`` 轮询队列并驱动 ``GLWidget``（对应 viper_main 中主线程 ``visualizer.run()``）。"""
+        repo_root = Path(__file__).resolve().parent.parent
+        if not _ensure_viper_signal_on_path(repo_root):
+            return
+        try:
+            from viper_usb_comm import ViperUSBComm  # type: ignore[import-untyped]
+        except ImportError as e:
+            logger.warning("无法导入 viper_usb_comm（需安装 pyusb）: %s", e)
+            return
+
+        trace_dir = repo_root / "viper_signal" / "trace"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+
+        self._viper_queue = queue.Queue(maxsize=256)
+        self._viper_comm = ViperUSBComm(data_queue=self._viper_queue, trace_dir=str(trace_dir))
+
+        if not self._viper_comm.connect():
+            logger.warning("Viper USB 连接失败（参考 viper_main: connect）")
+            try:
+                self._viper_comm.disconnect()
+            except Exception:
+                pass
+            self._viper_comm = None
+            self._viper_queue = None
+            return
+
+        if not self._viper_comm.start_continuous():
+            logger.warning("Viper 未能进入 continuous 模式（参考 viper_main: start_continuous）")
+            try:
+                self._viper_comm.disconnect()
+            except Exception:
+                pass
+            self._viper_comm = None
+            self._viper_queue = None
+            return
+
+        self._viper_comm.keep_reading = True
+        self._viper_read_thread = threading.Thread(target=self._viper_comm.read_usb_data, daemon=True)
+        self._viper_read_thread.start()
+
+        # viper_ui_display 约 10 FPS；黄探头用 latest_frame + 视频帧旁路刷新，定时器主要 drain 录制队列
+        self._viper_poll_timer = QTimer(self)
+        self._viper_poll_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._viper_poll_timer.setInterval(16)
+        self._viper_poll_timer.timeout.connect(self._poll_viper_queue_to_gl)
+        self._viper_poll_timer.start()
+        logger.info("Viper：已按 viper_main.py 启动（Queue + read_usb_data 守护线程 + 主线程 QTimer 消费队列）")
+
+    def _append_viper_pose_line(self, frame: dict) -> None:
+        """录制时把整帧 USB 位姿写入会话目录下的 JSONL。"""
+        fp = getattr(self, "_viper_pose_fp", None)
+        if fp is None:
+            return
+        row = {
+            "wall_time": time.time(),
+            "frame_num": frame.get("frame_num"),
+            "seuid": frame.get("seuid"),
+            "sensors": [
+                {"num": s["num"], "pos": list(s["pos"]), "ori": list(s["ori"])}
+                for s in frame.get("sensors", [])
+            ],
+        }
+        fp.write(json.dumps(row, ensure_ascii=False) + "\n")
+        fp.flush()
+
+    def _apply_latest_viper_to_gl(self) -> None:
+        """与 viper_ui_display.run 中「latest_data」一致：从 USB 线程更新的 latest 读位姿，驱动黄探头。"""
+        if not hasattr(self, "gl_widget"):
+            return
+        comm = getattr(self, "_viper_comm", None)
+        if comm is None:
+            return
+        lock = getattr(comm, "_latest_frame_lock", None)
+        if lock is None:
+            return
+        try:
+            with lock:
+                snap = comm._latest_frame
+        except Exception:
+            return
+        if not snap:
+            return
+        sensors = snap.get("sensors") or []
+        if not sensors:
+            return
+        px, py, pz = sensors[0]["pos"]
+        self.gl_widget.update_coordinates(
+            px * _VIPER_MM_TO_SCENE,
+            py * _VIPER_MM_TO_SCENE,
+            pz * _VIPER_MM_TO_SCENE,
+        )
+
+    def _drain_viper_queue_for_recording(self) -> None:
+        if self._viper_queue is None:
+            return
+        while True:
+            try:
+                f = self._viper_queue.get_nowait()
+            except queue.Empty:
+                break
+            if getattr(self, "_is_recording", False):
+                self._append_viper_pose_line(f)
+
+    def _poll_viper_queue_to_gl(self):
+        """主线程：黄探头跟 latest_frame；队列仅用于录制时落盘 drain。"""
+        self._apply_latest_viper_to_gl()
+        self._drain_viper_queue_for_recording()
+
+    def _stop_viper_usb(self):
+        """对齐 viper_main.py 的 finally：停轮询、停读、join、disconnect。"""
+        if self._viper_poll_timer is not None:
+            self._viper_poll_timer.stop()
+            self._viper_poll_timer = None
+        if self._viper_comm is not None:
+            self._viper_comm.keep_reading = False
+            try:
+                self._viper_comm.is_continuous = False
+            except Exception:
+                pass
+            if self._viper_read_thread is not None and self._viper_read_thread.is_alive():
+                self._viper_read_thread.join(timeout=2)
+            self._viper_read_thread = None
+            try:
+                self._viper_comm.disconnect()
+            except Exception as e:
+                logger.debug("Viper disconnect: %s", e)
+            self._viper_comm = None
+        self._viper_queue = None
+
+    def _set_video_stopped_placeholder(self):
+        if hasattr(self, "video_label"):
+            self.video_label.setText("视频已停止")
+            self.video_label.setStyleSheet("background-color: #000; color: #666; font-size: 14px;")
     
     def showEvent(self, event):
         """窗口显示时，显示覆盖层"""
@@ -513,21 +534,7 @@ class MainWindow(QMainWindow):
             else:
                 # 如果已经恢复过，确保位置仍然有效
                 QTimer.singleShot(50, self._validate_overlay_position)
-            
-            # 确保旋转矩阵标签在3D渲染上方
-            if hasattr(self, 'rotation_matrix_label') and get_show_result():
-                self.rotation_matrix_label.show()
-                self.rotation_matrix_label.raise_()
-                # 设置旋转矩阵标签位置（左上角）
-                # rotation label anchored to rot_container
-                overlay_rect = self.rot_container.rect()
-                self.rotation_matrix_label.setGeometry(
-                    5,
-                    self.title_bar_h + 5,
-                    self.matrix_label_w,
-                    self.matrix_label_h
-                )
-    
+
     def _restore_overlay_position(self):
         """恢复悬浮窗口位置（延迟调用，确保窗口完全显示）"""
         if not hasattr(self, 'video_overlay') or not hasattr(self, 'rot_container'):
@@ -578,23 +585,21 @@ class MainWindow(QMainWindow):
             self.video_overlay.setGeometry(x, y, overlay_width, overlay_height)
             logger.info(f"设置默认视频悬浮窗口位置: x={x}, y={y}, width={overlay_width}, height={overlay_height}, 容器大小: {container_rect.width()}x{container_rect.height()}")
         else:
-            # 容器大小无效，延迟重试
-            logger.warning(f"容器大小无效，延迟重试设置默认位置: {container_rect.width()}x{container_rect.height()}")
-            QTimer.singleShot(100, self._set_default_overlay_position)
-            # 容器大小无效，延迟重试
-            logger.warning(f"容器大小无效，延迟重试设置默认位置: {container_rect.width()}x{container_rect.height()}")
+            logger.warning(
+                "容器大小无效，延迟重试设置默认位置: %sx%s",
+                container_rect.width(),
+                container_rect.height(),
+            )
             QTimer.singleShot(100, self._set_default_overlay_position)
     
     def _validate_overlay_position(self):
         """验证并修正悬浮窗口位置（确保在容器范围内）"""
         if not hasattr(self, 'video_overlay') or not hasattr(self, 'rot_container'):
             return
-        
-        # container is rot_container
-        if not hasattr(self, 'rot_container'):
-            return
+
         overlay_rect = self.video_overlay.geometry()
-        container_rect = self.rot_container.geometry()
+        # video_overlay 的父控件是 rot_container，必须用 rect()（局部坐标），勿用 geometry()
+        container_rect = self.rot_container.rect()
         position_changed = False
         new_x, new_y = overlay_rect.x(), overlay_rect.y()
         
@@ -614,35 +619,22 @@ class MainWindow(QMainWindow):
         
         if position_changed:
             self.video_overlay.move(new_x, new_y)
-            # 保存修正后的位置
-            try:
-                save_overlay_position(new_x, new_y, overlay_rect.width(), overlay_rect.height())
-                logger.info(f"修正视频悬浮窗口位置: x={new_x}, y={new_y}")
-            except Exception as e:
-                logger.warning(f"保存悬浮窗口位置失败: {e}")
+            _persist_overlay_geometry(new_x, new_y, overlay_rect.width(), overlay_rect.height())
+            logger.info("修正视频悬浮窗口位置: x=%s, y=%s", new_x, new_y)
     
     def update_video_frame(self, frame):
-        # 检查是否应该显示视频帧（只有在inference或recording状态下才显示）
-        should_display = getattr(self, '_is_inference', False) or getattr(self, '_is_recording', False)
-
-        if should_display:
-            height, width, channel = frame.shape
-            bytes_per_line = channel * width
-            q_image = QImage(frame.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
-            pixmap = QPixmap.fromImage(q_image).scaled(
-                self.video_label.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            self.video_label.setPixmap(pixmap)
-
-            # 保存原始帧尺寸和缩放后的pixmap尺寸用于坐标转换
-            self.original_frame_size = (width, height)
-            self.scaled_pixmap_size = (pixmap.width(), pixmap.height())
-        else:
-            # 如果不在inference或recording状态，显示停止提示
-            self.video_label.setText("视频已停止")
-            self.video_label.setStyleSheet("background-color: #000; color: #666; font-size: 14px;")
+        height, width, channel = frame.shape
+        bytes_per_line = channel * width
+        q_image = QImage(frame.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(q_image).scaled(
+            self.video_label.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.video_label.setPixmap(pixmap)
+        self.original_frame_size = (width, height)
+        self.scaled_pixmap_size = (pixmap.width(), pixmap.height())
+        self._apply_latest_viper_to_gl()
 
     def _set_button_active(self, btn, active: bool):
         """切换按钮到激活/非激活样式"""
@@ -658,66 +650,50 @@ class MainWindow(QMainWindow):
         """更新处理时间显示（保留但不显示在悬浮窗口）"""
         pass  # 处理时间不再显示在悬浮窗口
     
-    def update_rotation_matrix(self, rotation_matrix):
-        """更新旋转矩阵显示"""
-        if rotation_matrix is not None:
-            # 更新标签显示
-            if hasattr(self, 'rotation_matrix_label'):
-                # 格式化旋转矩阵为字符串
-                matrix_str = "旋转矩阵:\n"
-                for i in range(3):
-                    row = rotation_matrix[i]
-                    matrix_str += f"[{row[0]:7.4f}, {row[1]:7.4f}, {row[2]:7.4f}]\n"
-                self.rotation_matrix_label.setText(matrix_str.strip())
-                self.rotation_matrix_label.raise_()
-            
-            # 更新3D渲染中的旋转矩阵，用于计算绿色圆锥位置
-            if hasattr(self, 'gl_widget'):
-                self.gl_widget.update_rotation_matrix(rotation_matrix)
-    
     def _disconnect_video_signals(self, thread):
         """断开视频线程信号，避免重复连接"""
         if not thread:
             return
-        try:
-            thread.frame_updated.disconnect(self.update_video_frame)
-        except Exception:
-            pass
-        try:
-            thread.rotation_matrix_updated.disconnect(self.update_rotation_matrix)
-        except Exception:
-            pass
-        try:
-            thread.processing_time_updated.disconnect(self.update_processing_time)
-        except Exception:
-            pass
-        if hasattr(thread, 'finished_playback'):
+        pairs = [
+            (thread.frame_updated, self.update_video_frame),
+            (thread.processing_time_updated, self.update_processing_time),
+        ]
+        for sig, slot in pairs:
+            try:
+                sig.disconnect(slot)
+            except Exception:
+                pass
+        if hasattr(thread, "finished_playback"):
             try:
                 thread.finished_playback.disconnect(self.on_file_finished)
             except Exception:
                 pass
+        for sig, slot in (
+            (getattr(thread, "package_saved", None), self._on_package_saved),
+            (getattr(thread, "thread_error", None), self.on_video_thread_error),
+            (getattr(thread, "thread_recovered", None), self.on_video_thread_recovered),
+        ):
+            if sig is not None:
+                try:
+                    sig.disconnect(slot)
+                except Exception:
+                    pass
     
     def _connect_video_signals(self, thread):
         """连接视频线程信号"""
         thread.frame_updated.connect(self.update_video_frame)
-        thread.rotation_matrix_updated.connect(self.update_rotation_matrix)
         thread.processing_time_updated.connect(self.update_processing_time)
-        if hasattr(thread, 'finished_playback'):
+        if hasattr(thread, "finished_playback"):
             thread.finished_playback.connect(self.on_file_finished)
-        # 连接数据包保存完成信号（如果线程支持）
-        try:
-            if hasattr(thread, 'package_saved'):
-                thread.package_saved.connect(self._on_package_saved)
-        except Exception:
-            pass
-        # 连接线程保护信号
-        try:
-            if hasattr(thread, 'thread_error'):
-                thread.thread_error.connect(self.on_video_thread_error)
-            if hasattr(thread, 'thread_recovered'):
-                thread.thread_recovered.connect(self.on_video_thread_recovered)
-        except Exception:
-            pass
+        pkg = getattr(thread, "package_saved", None)
+        if pkg is not None:
+            pkg.connect(self._on_package_saved)
+        err = getattr(thread, "thread_error", None)
+        if err is not None:
+            err.connect(self.on_video_thread_error)
+        rec = getattr(thread, "thread_recovered", None)
+        if rec is not None:
+            rec.connect(self.on_video_thread_recovered)
     
     def stop_video_thread(self):
         """停止当前视频线程"""
@@ -738,7 +714,11 @@ class MainWindow(QMainWindow):
         self.video_thread = thread
         self.current_source = "hdmi"
         thread.start()
-    
+        try:
+            thread.enable_analyzer(False)
+        except Exception:
+            pass
+
     def start_file_thread(self, file_path):
         """启动本地视频播放线程"""
         self.stop_video_thread()
@@ -755,186 +735,124 @@ class MainWindow(QMainWindow):
         if self.current_source == "file":
             self.start_hdmi_thread()
     
-    def on_mark_clicked(self):
-        """标记按钮点击事件"""
-        if not self.marking_mode:
-            # 进入标记模式
-            self.marking_mode = True
-            self.btn_mark.setText("Confirm")
-            self.video_label.start_drawing()
-            logger.info("进入标记模式，请在视频区域绘制矩形")
-        else:
-            # 确认并保存
-            rect = self.video_label.get_rect()
-            if rect:
-                # 将QLabel中的坐标转换为原始视频帧的坐标
-                label_width = self.video_label.width()
-                label_height = self.video_label.height()
-                pixmap_width, pixmap_height = self.scaled_pixmap_size
-                original_width, original_height = self.original_frame_size
-                
-                # 计算pixmap在label中的位置（KeepAspectRatio居中显示）
-                offset_x = (label_width - pixmap_width) / 2
-                offset_y = (label_height - pixmap_height) / 2
-                
-                # 将label坐标转换为pixmap坐标
-                pixmap_x = rect.x() - offset_x
-                pixmap_y = rect.y() - offset_y
-                pixmap_width_rect = rect.width()
-                pixmap_height_rect = rect.height()
-                
-                # 转换为原始帧坐标
-                frame_x = int(pixmap_x * original_width / pixmap_width)
-                frame_y = int(pixmap_y * original_height / pixmap_height)
-                frame_width = int(pixmap_width_rect * original_width / pixmap_width)
-                frame_height = int(pixmap_height_rect * original_height / pixmap_height)
-                
-                # 确保坐标在有效范围内
-                frame_x = max(0, min(frame_x, original_width - 1))
-                frame_y = max(0, min(frame_y, original_height - 1))
-                frame_width = max(1, min(frame_width, original_width - frame_x))
-                frame_height = max(1, min(frame_height, original_height - frame_y))
-                
-                try:
-                    save_crop_region(frame_x, frame_y, frame_width, frame_height)
-                    logger.info(f"保存裁剪区域: x={frame_x}, y={frame_y}, width={frame_width}, height={frame_height}")
-                except Exception as e:
-                    logger.error(f"保存裁剪区域失败: {e}", exc_info=True)
-            else:
-                logger.warning("未绘制矩形区域")
-            
-            # 退出标记模式
-            self.marking_mode = False
-            self.btn_mark.setText("Select")
-            self.video_label.stop_drawing()
-    
+    def _close_viper_pose_log(self) -> None:
+        if getattr(self, "_viper_pose_fp", None) is not None:
+            try:
+                self._viper_pose_fp.close()
+            except Exception:
+                pass
+            self._viper_pose_fp = None
+        self._record_session_dir = None
+
     def on_record_clicked(self):
-        """记录按钮点击事件"""
+        """Record：开始/停止录制；视频写入会话目录内 upkg，USB 位姿写入同目录 viper_poses.jsonl。"""
         logger.info("用户点击了记录按钮")
 
-        # 切换录制状态：点击开始录制，再次点击停止并保存
-        if not getattr(self, '_is_recording', False):
-            # 开始录制
-            self._is_recording = True
-            self.btn_record.setText("Stop")
-            # 录制与推理互斥：如果当前正在 inference，先禁用 inference，但保留视频流线程用于更新UI与录制
-            if getattr(self, '_is_inference', False):
-                try:
-                    if self.video_thread:
-                        self.video_thread.enable_analyzer(False)
-                except Exception:
-                    pass
-                self._is_inference = False
-                # 将 inference 按钮恢复为非激活样式
-                self._set_button_active(self.btn_inference, False)
-            # 将 record 按钮设为激活样式（橘色）
-            self._set_button_active(self.btn_record, True)
-
-            save_root = get_save_root()
-            # Ensure directory exists
+        if not getattr(self, "_is_recording", False):
+            save_root = Path(get_save_root())
             try:
-                Path(save_root).mkdir(parents=True, exist_ok=True)
+                save_root.mkdir(parents=True, exist_ok=True)
             except Exception as e:
-                logger.error(f"创建保存目录失败: {save_root}, {e}", exc_info=True)
-                self._is_recording = False
-                self.btn_record.setText("Record")
+                logger.error("创建保存根目录失败: %s, %s", save_root, e, exc_info=True)
                 return
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_path = str(Path(save_root) / f"{timestamp}.upkg")
+            session_dir = save_root / f"capture_{timestamp}"
+            try:
+                session_dir.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                session_dir = save_root / f"capture_{timestamp}_{int(time.time() * 1000) % 100000}"
+                session_dir.mkdir(parents=True, exist_ok=True)
+
+            self._record_session_dir = session_dir
+            video_path = session_dir / "video.upkg"
+
+            meta = {
+                "created": datetime.now().isoformat(),
+                "video_url": self.video_url,
+                "frame_width": get_frame_width(),
+                "frame_height": get_frame_height(),
+                "fps": get_fps(),
+                "video_file": video_path.name,
+                "viper_poses_file": "viper_poses.jsonl",
+            }
+            try:
+                (session_dir / "meta.json").write_text(
+                    json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            except Exception as e:
+                logger.error("写入 meta.json 失败: %s", e, exc_info=True)
+
+            try:
+                self._viper_pose_fp = open(session_dir / "viper_poses.jsonl", "w", encoding="utf-8")
+            except Exception as e:
+                logger.error("无法创建 viper_poses.jsonl: %s", e, exc_info=True)
+                self._record_session_dir = None
+                shutil.rmtree(session_dir, ignore_errors=True)
+                return
 
             width = get_frame_width()
             height = get_frame_height()
-            fps = get_fps()
-
-            package = DataPackage(save_path, image_type='nv12', width=width, height=height, realtime=True)
+            package = DataPackage(str(video_path), image_type="nv12", width=width, height=height, realtime=True)
             try:
                 package.start_recording()
             except Exception as e:
-                logger.error(f"启动数据包录制失败: {e}", exc_info=True)
-                self._is_recording = False
-                self.btn_record.setText("Record")
+                logger.error("启动数据包录制失败: %s", e, exc_info=True)
+                self._close_viper_pose_log()
+                shutil.rmtree(session_dir, ignore_errors=True)
                 return
 
-            # 保存引用并通过 VideoStreamThread 写入（避免重复 HTTP 拉取且保证 UI 更新不丢帧）
+            self._is_recording = True
+            self.btn_record.setText("Stop")
+            self._set_button_active(self.btn_record, True)
             self._record_package = package
             try:
                 if self.video_thread:
                     self.video_thread.start_recording_package(package)
                 else:
-                    # 没有视频线程时回退到旧逻辑（不推荐）
-                    logger.warning("没有活动的视频线程，录制可能无法进行")
+                    logger.warning("没有活动的视频线程，仅写入 USB 位姿文件")
             except Exception as e:
-                logger.error(f"开始写入数据包失败: {e}", exc_info=True)
+                logger.error("开始写入数据包失败: %s", e, exc_info=True)
                 self._is_recording = False
                 self._set_button_active(self.btn_record, False)
                 self.btn_record.setText("Record")
+                self._close_viper_pose_log()
+                shutil.rmtree(session_dir, ignore_errors=True)
                 return
+
+            logger.info("开始录制，会话目录: %s", session_dir)
         else:
-            # 停止录制：通知 VideoStreamThread 停止写入并异步保存包
             logger.info("停止录制请求")
+            self._close_viper_pose_log()
             try:
                 if self.video_thread:
                     self.video_thread.stop_recording_package()
+                else:
+                    pkg = getattr(self, "_record_package", None)
+                    if pkg is not None:
+                        try:
+                            pkg.save()
+                            logger.info("数据包保存完成: %s", pkg.save_path)
+                        except Exception as e:
+                            logger.error("无视频线程时保存数据包失败: %s", e, exc_info=True)
+                        self.btn_record.setText("Record")
+                        self._set_button_active(self.btn_record, False)
             except Exception as e:
-                logger.error(f"请求停止写入数据包失败: {e}", exc_info=True)
-            # UI 先显示保存中状态，实际保存完成后由 package_saved 信号恢复按钮文本
-            self.btn_record.setText("Saving...")
+                logger.error("请求停止写入数据包失败: %s", e, exc_info=True)
+            if self.video_thread:
+                self.btn_record.setText("Saving...")
             self._is_recording = False
             self._set_button_active(self.btn_record, False)
-
-            # 如果既没有在inference也没有在recording，清除视频显示
-            if not getattr(self, '_is_inference', False) and not getattr(self, '_is_recording', False):
-                if hasattr(self, 'video_label'):
-                    self.video_label.setText("视频已停止")
-                    self.video_label.setStyleSheet("background-color: #000; color: #666; font-size: 14px;")
-    
-    def on_inference_clicked(self):
-        """推理按钮点击事件"""
-        logger.info("用户点击了推理按钮")
-        # 切换 inference 状态
-        if not getattr(self, '_is_inference', False):
-            # 要开启 inference：如果正在录制，先停止录制
-            if getattr(self, '_is_recording', False):
-                logger.info("开启推理前，先停止正在进行的录制")
-                stop_event = getattr(self, '_record_stop_event', None)
-                if stop_event:
-                    stop_event.set()
-                # 让记录线程处理保存（不阻塞）
-                self._is_recording = False
-                self._set_button_active(self.btn_record, False)
-
-            # 启动 HDMI 线程（包含 AI 分析）
-            try:
-                self.start_hdmi_thread()
-                self._is_inference = True
-                self._set_button_active(self.btn_inference, True)
-                # 开启inference时显示红色矩形
-                if hasattr(self, 'gl_widget'):
-                    self.gl_widget.set_show_red_rectangle(True)
-            except Exception as e:
-                logger.error(f"启动 inference 失败: {e}", exc_info=True)
-        else:
-            # 关闭 inference：停止视频线程（包含 AI）
-            try:
-                self.stop_video_thread()
-                self._is_inference = False
-                self._set_button_active(self.btn_inference, False)
-                # 关闭inference时隐藏红色矩形
-                if hasattr(self, 'gl_widget'):
-                    self.gl_widget.set_show_red_rectangle(False)
-                # 清除视频显示
-                if hasattr(self, 'video_label'):
-                    self.video_label.setText("视频已停止")
-                    self.video_label.setStyleSheet("background-color: #000; color: #666; font-size: 14px;")
-            except Exception as e:
-                logger.error(f"停止 inference 失败: {e}", exc_info=True)
 
     def _on_package_saved(self, path: str):
         """DataPackage 保存完成回调（在视频线程中发出）"""
         logger.info(f"数据包保存完成: {path}")
         try:
-            QTimer.singleShot(0, lambda: self.btn_record.setText("Record"))
+            def _restore():
+                self.btn_record.setText("Record")
+                self._set_button_active(self.btn_record, False)
+
+            QTimer.singleShot(0, _restore)
         except Exception:
             pass
 
@@ -974,17 +892,24 @@ class MainWindow(QMainWindow):
         logger.info(f"用户选择视频文件: {file_path}")
         self.start_file_thread(file_path)
         
-    def on_shutdown_clicked(self):
-        """关机按钮点击事件"""
-        logger.info("用户点击了关机按钮，执行系统关机命令")
-        try:
-            # 使用系统关机命令，可能需要管理员权限
-            subprocess.Popen(["/sbin/shutdown", "-h", "now"])
-        except Exception as e:
-            logger.error(f"执行关机命令失败: {e}", exc_info=True)
-        
     def closeEvent(self, event):
         logger.info("主窗口关闭事件触发，正在停止所有线程...")
+        if getattr(self, "_is_recording", False):
+            self._close_viper_pose_log()
+            try:
+                if self.video_thread:
+                    self.video_thread.stop_recording_package()
+                else:
+                    pkg = getattr(self, "_record_package", None)
+                    if pkg is not None:
+                        try:
+                            pkg.save()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            self._is_recording = False
+        self._stop_viper_usb()
         self.stop_video_thread()
         logger.info("所有线程已停止")
         event.accept()
@@ -997,14 +922,9 @@ class MainWindow(QMainWindow):
                 self.close()
     
     def update_overlay_labels(self):
-        """更新悬浮窗内标签位置"""
-        # update rotation label anchored to rot_container
-        if hasattr(self, 'rot_container') and getattr(self, 'rotation_matrix_label', None) is not None:
-            self.rotation_matrix_label.setGeometry(
-                5, self.title_bar_h + 5,
-                self.matrix_label_w, self.matrix_label_h
-            )
-    
+        """悬浮层布局变化时的占位回调（如 ResizableOverlay 缩放时调用）。"""
+        pass
+
     def resizeEvent(self, event):
         """窗口大小改变时，调整覆盖层位置"""
         super().resizeEvent(event)
@@ -1017,7 +937,7 @@ class MainWindow(QMainWindow):
         # ensure video_overlay remains within rot_container
         if hasattr(self, 'video_overlay') and self.video_overlay.isVisible() and hasattr(self, 'rot_container'):
             overlay_rect = self.video_overlay.geometry()
-            container_rect = self.rot_container.geometry()
+            container_rect = self.rot_container.rect()
             position_changed = False
             # 如果覆盖层超出容器，调整位置
             if overlay_rect.right() > container_rect.right():
@@ -1030,15 +950,19 @@ class MainWindow(QMainWindow):
                 position_changed = True
             # 如果位置被调整，保存新位置
             if position_changed:
-                try:
-                    x = self.video_overlay.x()
-                    y = self.video_overlay.y()
-                    width = self.video_overlay.width()
-                    height = self.video_overlay.height()
-                    save_overlay_position(x, y, width, height)
-                    logger.info(f"窗口大小改变，调整并保存视频悬浮窗口位置: x={x}, y={y}, width={width}, height={height}")
-                except Exception as e:
-                    logger.warning(f"保存悬浮窗口位置失败: {e}")
+                _persist_overlay_geometry(
+                    self.video_overlay.x(),
+                    self.video_overlay.y(),
+                    self.video_overlay.width(),
+                    self.video_overlay.height(),
+                )
+                logger.info(
+                    "窗口大小改变，调整并保存视频悬浮窗口位置: x=%s, y=%s, width=%s, height=%s",
+                    self.video_overlay.x(),
+                    self.video_overlay.y(),
+                    self.video_overlay.width(),
+                    self.video_overlay.height(),
+                )
             # 更新标签位置
             self.update_overlay_labels()
 

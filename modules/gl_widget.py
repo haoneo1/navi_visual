@@ -5,8 +5,8 @@ except ImportError:
     HAS_NUMPY = False
     print("Warning: numpy not available, 3D rendering will be limited")
 
-from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-from PyQt6.QtCore import QPoint
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from PySide6.QtCore import QPoint
 from .config import get_3d_view_rotation, save_3d_view_rotation
 
 class GLWidget(QOpenGLWidget):
@@ -25,6 +25,8 @@ class GLWidget(QOpenGLWidget):
 
         # 控制红色矩形显示的标志
         self.show_red_rectangle = True
+        # 绿色尾翼（原 AI 旋转矩阵）；主界面已不再接入矩阵时默认关闭
+        self.show_green_probe = False
         
         # 球体参数（中心红色球体）
         self.sphere_radius = 0.1
@@ -133,7 +135,8 @@ class GLWidget(QOpenGLWidget):
         self.draw_probe_s()
         if self.show_red_rectangle:
             self.draw_probe_t()
-        self.draw_probe_g()  # 绘制绿色圆锥
+        if self.show_green_probe:
+            self.draw_probe_g()
 
         glFlush()
     
@@ -182,11 +185,15 @@ class GLWidget(QOpenGLWidget):
         if not HAS_NUMPY:
             return
 
-        center_dir = np.array([-self.x, -self.y, -self.z])
-        if np.linalg.norm(center_dir) < 0.001:
-            return
-
-        center_dir = center_dir / np.linalg.norm(center_dir)
+        # 黄探头位置在球心附近时，方向向量退化，原逻辑直接 return 会导致「看不到黄锥」
+        pos = np.array([float(self.x), float(self.y), float(self.z)], dtype=float)
+        n = float(np.linalg.norm(pos))
+        if n < 1e-5:
+            # 无 Viper 数据或零位：用参考方向画在球心处的小黄锥，便于与绿探头区分
+            ref = np.array([0.4, 0.0, 0.0], dtype=float)
+            center_dir = -ref / float(np.linalg.norm(ref))
+        else:
+            center_dir = -pos / n
         
         # 黄色移动圆锥材质
         glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, [1.0, 1.0, 0.0, 1.0])
@@ -445,6 +452,11 @@ class GLWidget(QOpenGLWidget):
     def set_show_red_rectangle(self, show: bool):
         """设置是否显示红色矩形（inference模式控制）"""
         self.show_red_rectangle = show
+        self.update()
+
+    def set_show_green_probe(self, show: bool):
+        """是否绘制绿色尾翼（AI 旋转矩阵）。"""
+        self.show_green_probe = bool(show)
         self.update()
     
     def mousePressEvent(self, event):

@@ -11,7 +11,7 @@ import cv2
 import requests
 import os
 from concurrent.futures import ThreadPoolExecutor
-from PyQt6.QtCore import QThread, pyqtSignal, QTimer
+from PySide6.QtCore import QObject, QThread, Signal, QTimer, Qt
 from datetime import datetime
 from .config import (
     get_frame_width,
@@ -42,6 +42,17 @@ DUMMY_ROOT = get_dummy_root()
 FPS = get_fps()
 # 计算每帧之间的时间间隔（毫秒）
 FRAME_INTERVAL_MS = int(1000.0 / FPS) if FPS > 0 else 1000
+
+
+class _VideoRestartBridge(QObject):
+    """将重启逻辑投递到视频 QThread 内执行（线程池回调不能直接接触 QTimer）。"""
+
+    def __init__(self, owner: "VideoStreamThread"):
+        super().__init__()
+        self._owner = owner
+
+    def run_restart(self):
+        self._owner._restart_thread()
 
 
 def process_frame(url, output_dir=None, analyzer=None):
@@ -111,16 +122,18 @@ def process_frame(url, output_dir=None, analyzer=None):
 class VideoStreamThread(QThread):
     """视频流获取线程 - 使用定时器和线程池"""
     if HAS_NUMPY:
-        frame_updated = pyqtSignal(np.ndarray)
-        rotation_matrix_updated = pyqtSignal(np.ndarray)  # 旋转矩阵信号
+        frame_updated = Signal(np.ndarray)
+        rotation_matrix_updated = Signal(np.ndarray)  # 旋转矩阵信号
     else:
-        frame_updated = pyqtSignal(object)  # 使用object代替np.ndarray
-        rotation_matrix_updated = pyqtSignal(object)  # 使用object代替np.ndarray
-    processing_time_updated = pyqtSignal(float)  # 处理时间信号（毫秒）
-    package_saved = pyqtSignal(str)  # 当 DataPackage 保存完成时发出（传递保存路径）
-    thread_error = pyqtSignal(str)  # 线程错误警告信号
-    thread_recovered = pyqtSignal()  # 线程恢复信号
-    
+        frame_updated = Signal(object)  # 使用object代替np.ndarray
+        rotation_matrix_updated = Signal(object)  # 使用object代替np.ndarray
+    processing_time_updated = Signal(float)  # 处理时间信号（毫秒）
+    package_saved = Signal(str)  # 当 DataPackage 保存完成时发出（传递保存路径）
+    thread_error = Signal(str)  # 线程错误警告信号
+    thread_recovered = Signal()  # 线程恢复信号
+    # 由线程池回调触发，排队到本 QThread 再执行 _restart_thread，避免在非 Qt 线程操作 QTimer 导致崩溃退出
+    _restart_requested = Signal()
+
     def __init__(self, url):
         super().__init__()
         self.url = url
@@ -128,6 +141,8 @@ class VideoStreamThread(QThread):
         self.timer = None
         self.analyzer = AIAnalyzer()
         self.executor = ThreadPoolExecutor(max_workers=2)
+        self._restart_bridge = None
+        self._restart_in_progress = False
         # 当前正在写入的数据包（由 UI 启动录制时传入）
         self._recording_package = None
 
@@ -205,7 +220,7 @@ class VideoStreamThread(QThread):
                     # 如果启用了自动重启，尝试重启线程
                     if self._auto_restart_enabled and self.running:
                         logger.info("尝试自动重启视频流线程...")
-                        self._restart_thread()
+                        self._restart_requested.emit()
                 else:
                     # 发送空的处理时间信号以保持UI更新
                     self.processing_time_updated.emit(processing_time)
@@ -220,12 +235,19 @@ class VideoStreamThread(QThread):
                 self.thread_error.emit(error_msg)
 
                 if self._auto_restart_enabled and self.running:
-                    self._restart_thread()
-    
+                    self._restart_requested.emit()
+
     def run(self):
         """启动定时器"""
         self.running = True
         logger.info(f"视频流线程启动 - URL: {self.url}, FPS: {FPS}, 间隔: {FRAME_INTERVAL_MS}ms")
+
+        self._restart_bridge = _VideoRestartBridge(self)
+        self._restart_bridge.moveToThread(QThread.currentThread())
+        self._restart_requested.connect(
+            self._restart_bridge.run_restart,
+            Qt.ConnectionType.QueuedConnection,
+        )
 
         # 启动健康检查定时器（每5秒检查一次）
         self._health_check_timer = QTimer()
@@ -245,11 +267,18 @@ class VideoStreamThread(QThread):
         logger.info("正在停止视频流线程...")
         self.running = False
 
+        if self.timer and self.timer.isActive():
+            self.timer.stop()
+
         # 停止健康检查定时器
         if self._health_check_timer and self._health_check_timer.isActive():
             self._health_check_timer.stop()
 
-        self.executor.shutdown(wait=True)
+        try:
+            self.executor.shutdown(wait=True)
+        except Exception as e:
+            logger.warning("线程池关闭时出现异常（可忽略）: %s", e)
+
         self.quit()
         self.wait()
         logger.info("视频流线程已完全停止")
@@ -321,7 +350,12 @@ class VideoStreamThread(QThread):
                 self._restart_thread()
 
     def _restart_thread(self):
-        """重启视频流线程"""
+        """在本 QThread 内重启定时器与线程池（须在拥有事件循环的线程调用）。"""
+        if self._restart_in_progress:
+            return
+        if not self.running:
+            return
+        self._restart_in_progress = True
         try:
             logger.info("正在重启视频流线程...")
 
@@ -333,16 +367,21 @@ class VideoStreamThread(QThread):
             if self._health_check_timer and self._health_check_timer.isActive():
                 self._health_check_timer.stop()
 
-            # 关闭线程池
-            if hasattr(self, 'executor'):
-                self.executor.shutdown(wait=False)
+            # 关闭线程池，等待在途任务结束，避免与 QTimer 竞态导致进程异常退出
+            if hasattr(self, "executor") and self.executor is not None:
+                try:
+                    self.executor.shutdown(wait=True, cancel_futures=False)
+                except TypeError:
+                    self.executor.shutdown(wait=True)
 
-            # 等待一小段时间让资源释放
-            time.sleep(0.5)
+            time.sleep(0.1)
 
             # 重置状态
             self._consecutive_failures = 0
             self._last_successful_frame = time.time()
+
+            if not self.running:
+                return
 
             # 重新创建线程池
             self.executor = ThreadPoolExecutor(max_workers=2)
@@ -364,6 +403,8 @@ class VideoStreamThread(QThread):
             error_msg = f"视频流线程重启失败: {e}"
             logger.error(error_msg, exc_info=True)
             self.thread_error.emit(error_msg)
+        finally:
+            self._restart_in_progress = False
 
     def set_auto_restart(self, enabled: bool):
         """设置是否启用自动重启功能"""
@@ -374,13 +415,13 @@ class VideoStreamThread(QThread):
 class VideoFileThread(QThread):
     """本地 MP4 播放线程"""
     if HAS_NUMPY:
-        frame_updated = pyqtSignal(np.ndarray)
-        rotation_matrix_updated = pyqtSignal(np.ndarray)
+        frame_updated = Signal(np.ndarray)
+        rotation_matrix_updated = Signal(np.ndarray)
     else:
-        frame_updated = pyqtSignal(object)  # 使用object代替np.ndarray
-        rotation_matrix_updated = pyqtSignal(object)  # 使用object代替np.ndarray
-    processing_time_updated = pyqtSignal(float)
-    finished_playback = pyqtSignal()
+        frame_updated = Signal(object)  # 使用object代替np.ndarray
+        rotation_matrix_updated = Signal(object)  # 使用object代替np.ndarray
+    processing_time_updated = Signal(float)
+    finished_playback = Signal()
 
     def __init__(self, file_path):
         super().__init__()

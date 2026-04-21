@@ -2,8 +2,8 @@ import sys
 import matplotlib
 matplotlib.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
 
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QTimer
 from modules import SplashScreen, MainWindow
 from modules.config import (
     get_full_screen,
