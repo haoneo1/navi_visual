@@ -1,0 +1,301 @@
+2026-04-22 10:38:06 - navi_visual - INFO - 日志系统初始化完成，日志文件: logs/log_20260422_103806.txt
+2026-04-22 10:38:06 - navi_visual - INFO - ============================================================
+2026-04-22 10:38:06 - navi_visual - INFO - 程序启动
+2026-04-22 10:38:06 - navi_visual - INFO - ============================================================
+2026-04-22 10:38:07 - navi_visual - INFO - 配置加载完成 - 全屏模式: False, 视频URL: http://localhost:8080/raw
+2026-04-22 10:38:07 - navi_visual - INFO - 启动 HDMI 视频流线程
+2026-04-22 10:38:07 - navi_visual - INFO - Loading model from: /home/mig/Documents/navi_visual/best.pth
+2026-04-22 10:38:07 - navi_visual - INFO - AI模型加载成功: /home/mig/Documents/navi_visual/best.pth
+2026-04-22 10:38:07 - navi_visual - INFO - VideoStreamThread: AI 分析器已禁用
+2026-04-22 10:38:07 - navi_visual - INFO - 视频流线程启动 - URL: http://localhost:8080/raw, FPS: 1.0, 间隔: 1000ms
+2026-04-22 10:38:07 - navi_visual - WARNING - 无法导入 viper_usb_comm（需安装 pyusb）: No module named 'usb'
+2026-04-22 10:38:07 - navi_visual - INFO - 以窗口模式显示主窗口
+2026-04-22 10:38:07 - navi_visual - ERROR - 获取视频流错误: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /raw (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused"))
+Traceback (most recent call last):
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 204, in _new_conn
+    sock = connection.create_connection(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/util/connection.py", line 73, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 493, in _make_request
+    conn.request(
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 500, in request
+    self.endheaders()
+  File "/home/mig/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/http/client.py", line 1318, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/home/mig/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/http/client.py", line 1078, in _send_output
+    self.send(msg)
+  File "/home/mig/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/http/client.py", line 1016, in send
+    self.connect()
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 331, in connect
+    self.sock = self._new_conn()
+                ^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 219, in _new_conn
+    raise NewConnectionError(
+urllib3.exceptions.NewConnectionError: HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/adapters.py", line 644, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /raw (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused"))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/mig/Documents/navi_visual/modules/video_thread.py", line 66, in process_frame
+    response = requests.get(url, timeout=1)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/api.py", line 73, in get
+    return request("get", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/adapters.py", line 677, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /raw (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused"))
+2026-04-22 10:38:07 - navi_visual - WARNING - 视频帧获取失败，连续失败次数: 1
+2026-04-22 10:38:07 - navi_visual - INFO - 进入应用程序主循环
+2026-04-22 10:38:07 - navi_visual - INFO - 恢复视频悬浮窗口位置: x=619, y=134, width=400, height=400, 容器大小: 1020x758
+2026-04-22 10:38:08 - navi_visual - ERROR - 获取视频流错误: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /raw (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused"))
+Traceback (most recent call last):
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 204, in _new_conn
+    sock = connection.create_connection(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/util/connection.py", line 73, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 493, in _make_request
+    conn.request(
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 500, in request
+    self.endheaders()
+  File "/home/mig/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/http/client.py", line 1318, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/home/mig/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/http/client.py", line 1078, in _send_output
+    self.send(msg)
+  File "/home/mig/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/http/client.py", line 1016, in send
+    self.connect()
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 331, in connect
+    self.sock = self._new_conn()
+                ^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 219, in _new_conn
+    raise NewConnectionError(
+urllib3.exceptions.NewConnectionError: HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/adapters.py", line 644, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /raw (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused"))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/mig/Documents/navi_visual/modules/video_thread.py", line 66, in process_frame
+    response = requests.get(url, timeout=1)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/api.py", line 73, in get
+    return request("get", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/adapters.py", line 677, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /raw (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused"))
+2026-04-22 10:38:08 - navi_visual - WARNING - 视频帧获取失败，连续失败次数: 2
+2026-04-22 10:38:09 - navi_visual - ERROR - 获取视频流错误: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /raw (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused"))
+Traceback (most recent call last):
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 204, in _new_conn
+    sock = connection.create_connection(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/util/connection.py", line 73, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 493, in _make_request
+    conn.request(
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 500, in request
+    self.endheaders()
+  File "/home/mig/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/http/client.py", line 1318, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/home/mig/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/http/client.py", line 1078, in _send_output
+    self.send(msg)
+  File "/home/mig/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/http/client.py", line 1016, in send
+    self.connect()
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 331, in connect
+    self.sock = self._new_conn()
+                ^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 219, in _new_conn
+    raise NewConnectionError(
+urllib3.exceptions.NewConnectionError: HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/adapters.py", line 644, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /raw (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused"))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/mig/Documents/navi_visual/modules/video_thread.py", line 66, in process_frame
+    response = requests.get(url, timeout=1)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/api.py", line 73, in get
+    return request("get", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/adapters.py", line 677, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /raw (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused"))
+2026-04-22 10:38:09 - navi_visual - WARNING - 视频帧获取失败，连续失败次数: 3
+2026-04-22 10:38:10 - navi_visual - ERROR - 获取视频流错误: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /raw (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused"))
+Traceback (most recent call last):
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 204, in _new_conn
+    sock = connection.create_connection(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/util/connection.py", line 73, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 493, in _make_request
+    conn.request(
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 500, in request
+    self.endheaders()
+  File "/home/mig/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/http/client.py", line 1318, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/home/mig/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/http/client.py", line 1078, in _send_output
+    self.send(msg)
+  File "/home/mig/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/http/client.py", line 1016, in send
+    self.connect()
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 331, in connect
+    self.sock = self._new_conn()
+                ^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 219, in _new_conn
+    raise NewConnectionError(
+urllib3.exceptions.NewConnectionError: HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/adapters.py", line 644, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /raw (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused"))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/mig/Documents/navi_visual/modules/video_thread.py", line 66, in process_frame
+    response = requests.get(url, timeout=1)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/api.py", line 73, in get
+    return request("get", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mig/Documents/us_navi_Xiang/navi_visual/.venv/lib/python3.11/site-packages/requests/adapters.py", line 677, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /raw (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [Errno 111] Connection refused"))
+2026-04-22 10:38:10 - navi_visual - WARNING - 视频帧获取失败，连续失败次数: 4
+2026-04-22 10:38:11 - navi_visual - INFO - 主窗口关闭事件触发，正在停止所有线程...
+2026-04-22 10:38:11 - navi_visual - INFO - 正在停止视频流线程...
+2026-04-22 10:38:11 - navi_visual - INFO - 视频流线程已停止
+2026-04-22 10:38:11 - navi_visual - INFO - 视频流线程已完全停止
+2026-04-22 10:38:11 - navi_visual - INFO - 所有线程已停止
+2026-04-22 10:38:11 - navi_visual - INFO - 应用程序退出，退出码: 0
+2026-04-22 10:38:11 - navi_visual - INFO - ============================================================

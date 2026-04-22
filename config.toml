@@ -1,0 +1,29 @@
+[app]
+full_screen = false
+show_result = false
+overlay_x = 619
+overlay_y = 134
+overlay_width = 400
+overlay_height = 400
+rotation_x = 14.0
+rotation_y = -258.0
+
+[video]
+video_url = "http://localhost:8080/raw"
+frame_width = 1920
+frame_height = 1088
+fps = 30
+crop_x = 489
+crop_y = 211
+crop_width = 1003
+crop_height = 837
+
+[capture]
+save_capture = false
+save_root = "./records"
+
+[dummy]
+use_dummy = true
+dummy_root = "./data/capture/20250816_100250"
+dummy_frames = "./data/dummy_frames.txt"
+dummy_path = "./data/dummy_path.txt"
