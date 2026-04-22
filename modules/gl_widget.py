@@ -25,8 +25,6 @@ class GLWidget(QOpenGLWidget):
 
         # 控制红色矩形显示的标志
         self.show_red_rectangle = True
-        # 绿色尾翼（原 AI 旋转矩阵）；主界面已不再接入矩阵时默认关闭
-        self.show_green_probe = False
         
         # 球体参数（中心红色球体）
         self.sphere_radius = 0.1
@@ -55,20 +53,7 @@ class GLWidget(QOpenGLWidget):
         self.probe_t_y = self.preset_positions[0][1]   # 固定圆锥Y坐标
         self.probe_t_z = self.preset_positions[0][2]   # 固定圆锥Z坐标
         
-        # 绿色圆锥参数（根据旋转矩阵计算位置）
-        self.probe_g_base_radius = 0.06
-        self.probe_g_height = self.probe_t_height * 1.5
-        self.probe_g_slices = 32
-        self.probe_g_stacks = 1
-        self.probe_g_x = 0.0
-        self.probe_g_y = 0.0
-        self.probe_g_z = 0.0
-        # 默认使用单位矩阵，确保渲染时始终可见
-        if HAS_NUMPY:
-            self.rotation_matrix = np.eye(3, dtype=float)
-        else:
-            self.rotation_matrix = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-    
+
     def initializeGL(self):
         from OpenGL.GL import glClearColor, glEnable, GL_DEPTH_TEST
         glClearColor(0.1, 0.1, 0.1, 1)
@@ -135,8 +120,6 @@ class GLWidget(QOpenGLWidget):
         self.draw_probe_s()
         if self.show_red_rectangle:
             self.draw_probe_t()
-        if self.show_green_probe:
-            self.draw_probe_g()
 
         glFlush()
     
@@ -185,11 +168,9 @@ class GLWidget(QOpenGLWidget):
         if not HAS_NUMPY:
             return
 
-        # 黄探头位置在球心附近时，方向向量退化，原逻辑直接 return 会导致「看不到黄锥」
         pos = np.array([float(self.x), float(self.y), float(self.z)], dtype=float)
         n = float(np.linalg.norm(pos))
         if n < 1e-5:
-            # 无 Viper 数据或零位：用参考方向画在球心处的小黄锥，便于与绿探头区分
             ref = np.array([0.4, 0.0, 0.0], dtype=float)
             center_dir = -ref / float(np.linalg.norm(ref))
         else:
@@ -316,98 +297,6 @@ class GLWidget(QOpenGLWidget):
 
         glPopMatrix()
     
-    # 绘制绿色圆锥体（根据旋转矩阵计算位置）- 尖端在中心
-    def draw_probe_g(self):
-        from OpenGL.GL import (glMaterialfv, GL_FRONT, GL_AMBIENT_AND_DIFFUSE,
-                              GL_SPECULAR, GL_SHININESS, glPushMatrix, 
-                              glTranslatef, glRotatef, glPopMatrix, glBegin, glEnd, glVertex3f, glNormal3f, GL_QUADS)
-        # 通过逆矩阵将固定圆锥方向映射到移动圆锥方向
-        if not HAS_NUMPY:
-            return
-
-        try:
-            rot_inv = np.linalg.inv(self.rotation_matrix)
-        except np.linalg.LinAlgError:
-            rot_inv = np.eye(3, dtype=float)
-
-        # 固定圆锥的基准方向（沿 X 轴指向中心）
-        base_dir = np.array([1.0, 0.0, 0.0])
-        position_dir = rot_inv @ base_dir
-
-        if np.linalg.norm(position_dir) < 0.001:
-            position_dir = base_dir
-        else:
-            position_dir = position_dir / np.linalg.norm(position_dir)
-        
-        # 绿色矩形，表示旋转方向/尾翼
-        rect_length = 0.25
-        rect_width = 0.12
-        rect_thickness = 0.02
-
-        glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, [0.0, 1.0, 0.0, 1.0])  # 绿色
-        glMaterialfv(GL_FRONT, GL_SPECULAR, [0.9, 0.9, 0.9, 1.0])
-        glMaterialfv(GL_FRONT, GL_SHININESS, 30.0)
-
-        glPushMatrix()
-        glTranslatef(0.0, 0.0, 0.0)
-        self.rotate_to_direction(position_dir)
-        glTranslatef(0.0, 0.0, rect_length / 2.0)
-
-        hw = rect_width / 2.0
-        hl = rect_length / 2.0
-        ht = rect_thickness / 2.0
-
-        # draw simple box same as red one
-        glBegin(GL_QUADS)
-        glNormal3f(0.0, 0.0, 1.0)
-        glVertex3f(-hw, -ht, hl)
-        glVertex3f(hw, -ht, hl)
-        glVertex3f(hw, ht, hl)
-        glVertex3f(-hw, ht, hl)
-        glEnd()
-
-        glBegin(GL_QUADS)
-        glNormal3f(0.0, 0.0, -1.0)
-        glVertex3f(-hw, -ht, -hl)
-        glVertex3f(-hw, ht, -hl)
-        glVertex3f(hw, ht, -hl)
-        glVertex3f(hw, -ht, -hl)
-        glEnd()
-
-        glBegin(GL_QUADS)
-        glNormal3f(0.0, 1.0, 0.0)
-        glVertex3f(-hw, ht, -hl)
-        glVertex3f(-hw, ht, hl)
-        glVertex3f(hw, ht, hl)
-        glVertex3f(hw, ht, -hl)
-        glEnd()
-
-        glBegin(GL_QUADS)
-        glNormal3f(0.0, -1.0, 0.0)
-        glVertex3f(-hw, -ht, -hl)
-        glVertex3f(hw, -ht, -hl)
-        glVertex3f(hw, -ht, hl)
-        glVertex3f(-hw, -ht, hl)
-        glEnd()
-
-        glBegin(GL_QUADS)
-        glNormal3f(-1.0, 0.0, 0.0)
-        glVertex3f(-hw, -ht, -hl)
-        glVertex3f(-hw, -ht, hl)
-        glVertex3f(-hw, ht, hl)
-        glVertex3f(-hw, ht, -hl)
-        glEnd()
-
-        glBegin(GL_QUADS)
-        glNormal3f(1.0, 0.0, 0.0)
-        glVertex3f(hw, -ht, -hl)
-        glVertex3f(hw, ht, -hl)
-        glVertex3f(hw, ht, hl)
-        glVertex3f(hw, -ht, hl)
-        glEnd()
-
-        glPopMatrix()
-    
     # 设置固定圆锥到指定位置
     def set_probe_t_position(self, position_index):
         if 0 <= position_index < len(self.preset_positions):
@@ -438,25 +327,9 @@ class GLWidget(QOpenGLWidget):
         self.z = z
         self.update()
     
-    def update_rotation_matrix(self, rotation_matrix):
-        """更新旋转矩阵，用于计算绿色圆锥位置"""
-        if rotation_matrix is None:
-            if HAS_NUMPY:
-                self.rotation_matrix = np.eye(3, dtype=float)
-            else:
-                self.rotation_matrix = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-        else:
-            self.rotation_matrix = rotation_matrix
-        self.update()
-
     def set_show_red_rectangle(self, show: bool):
-        """设置是否显示红色矩形（inference模式控制）"""
+        """设置是否显示红色矩形。"""
         self.show_red_rectangle = show
-        self.update()
-
-    def set_show_green_probe(self, show: bool):
-        """是否绘制绿色尾翼（AI 旋转矩阵）。"""
-        self.show_green_probe = bool(show)
         self.update()
     
     def mousePressEvent(self, event):

@@ -19,12 +19,12 @@ from .config import (
     get_save_capture,
     get_save_root,
     get_dummy_frames_path,
+    get_dummy_path,
     get_use_dummy,
     get_dummy_root,
     get_fps,
-    get_crop_region
+    get_crop_region,
 )
-from .ai_analyzer import AIAnalyzer
 from .logger import get_logger
 from .data_package import DataPackage
 
@@ -37,6 +37,7 @@ FRAME_SIZE_NV12 = FRAME_W * FRAME_H * 3 // 2
 SAVE_ROOT = get_save_root()
 SAVE_CAPTURE = get_save_capture()
 DUMMY_FRAME = get_dummy_frames_path()
+DUMMY_PATH_FILE = get_dummy_path()
 USE_DUMMY = get_use_dummy()
 DUMMY_ROOT = get_dummy_root()
 FPS = get_fps()
@@ -55,22 +56,22 @@ class _VideoRestartBridge(QObject):
         self._owner._restart_thread()
 
 
-def process_frame(url, output_dir=None, analyzer=None):
-    """处理一帧：捕获、转换格式、AI分析"""
+def process_frame(url, output_dir=None):
+    """处理一帧：捕获、转换格式（可选截图）"""
     start_time = time.perf_counter()
 
     if not HAS_NUMPY:
-        return None, None, (time.perf_counter() - start_time) * 1000
+        return None, (time.perf_counter() - start_time) * 1000, None
 
     try:
         response = requests.get(url, timeout=1)
         if response.status_code != 200:
             logger.error(f"HTTP请求失败: {response.status_code}")
-            return None, None, (time.perf_counter() - start_time) * 1000
+            return None, (time.perf_counter() - start_time) * 1000, None
 
         if len(response.content) != FRAME_SIZE_NV12:
             logger.warning(f"数据大小不匹配，期望: {FRAME_SIZE_NV12}, 实际: {len(response.content)}")
-            return None, None, (time.perf_counter() - start_time) * 1000
+            return None, (time.perf_counter() - start_time) * 1000, None
 
         # raw bytes（NV12）
         raw_bytes = response.content
@@ -79,54 +80,64 @@ def process_frame(url, output_dir=None, analyzer=None):
         frame_data = frame_data.reshape((FRAME_H*3//2), FRAME_W)
         frame_rgb = cv2.cvtColor(frame_data, cv2.COLOR_YUV2RGB_NV12)
         
-        # 根据配置裁剪区域
-        crop_region = get_crop_region()
-        if crop_region:
-            x, y, w, h = crop_region
-            # 确保裁剪区域在图像范围内
-            x = max(0, min(x, FRAME_W - 1))
-            y = max(0, min(y, FRAME_H - 1))
-            w = max(1, min(w, FRAME_W - x))
-            h = max(1, min(h, FRAME_H - y))
-            frame_for_ai = frame_rgb[y:y+h, x:x+w]
-        else:
-            frame_for_ai = frame_rgb
-        
-        # AI分析（使用裁剪后的图像）
-        rotation_matrix = analyzer.analyze(frame_for_ai) if analyzer else None
-        
-        # 记录旋转矩阵到日志
-        if rotation_matrix is not None:
-            matrix_str = ";".join([
-                f"[{row[0]:8.5f}, {row[1]:8.5f}, {row[2]:8.5f}]"
-                for row in rotation_matrix
-            ])
-            logger.info(f"ROT_AI: {matrix_str}")
-        
-        # 保存截图（保存裁剪后的图像）
+        # 保存截图（按配置裁剪）
         if SAVE_CAPTURE and output_dir:
             timestamp = datetime.now().strftime("%H%M%S_%f")[:-3]
-            frame_bgr = cv2.cvtColor(frame_for_ai, cv2.COLOR_RGB2BGR)
+            frame_for_save = _crop_frame(frame_rgb)
+            frame_bgr = cv2.cvtColor(frame_for_save, cv2.COLOR_RGB2BGR)
             filepath = os.path.join(output_dir, f"{timestamp}.jpg")
             cv2.imwrite(filepath, frame_bgr)
         
         elapsed_time = (time.perf_counter() - start_time) * 1000
         # 返回RGB用于UI显示，以及原始NV12 bytes用于记录
-        return frame_rgb, rotation_matrix, elapsed_time, raw_bytes
+        return frame_rgb, elapsed_time, raw_bytes
         
     except Exception as e:
         logger.error(f"获取视频流错误: {e}", exc_info=True)
-        return None, None, (time.perf_counter() - start_time) * 1000
+        return None, (time.perf_counter() - start_time) * 1000, None
+
+
+def _crop_frame(frame_rgb):
+    """根据配置裁剪图像区域。"""
+    crop_region = get_crop_region()
+    if not crop_region:
+        return frame_rgb
+
+    x, y, w, h = crop_region
+    h_total, w_total, _ = frame_rgb.shape
+    x = max(0, min(x, w_total - 1))
+    y = max(0, min(y, h_total - 1))
+    w = max(1, min(w, w_total - x))
+    h = max(1, min(h, h_total - y))
+    return frame_rgb[y:y + h, x:x + w]
+
+
+def process_dummy_frame(frame_path):
+    """处理一帧 dummy 图像。"""
+    start_time = time.perf_counter()
+    if not frame_path:
+        return None, (time.perf_counter() - start_time) * 1000, None
+
+    try:
+        frame_bgr = cv2.imread(str(frame_path))
+        if frame_bgr is None:
+            logger.warning("dummy 帧读取失败: %s", frame_path)
+            return None, (time.perf_counter() - start_time) * 1000, None
+
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        elapsed_time = (time.perf_counter() - start_time) * 1000
+        return frame_rgb, elapsed_time, None
+    except Exception as e:
+        logger.error("处理 dummy 帧错误: %s", e, exc_info=True)
+        return None, (time.perf_counter() - start_time) * 1000, None
 
 
 class VideoStreamThread(QThread):
     """视频流获取线程 - 使用定时器和线程池"""
     if HAS_NUMPY:
         frame_updated = Signal(np.ndarray)
-        rotation_matrix_updated = Signal(np.ndarray)  # 旋转矩阵信号
     else:
         frame_updated = Signal(object)  # 使用object代替np.ndarray
-        rotation_matrix_updated = Signal(object)  # 使用object代替np.ndarray
     processing_time_updated = Signal(float)  # 处理时间信号（毫秒）
     package_saved = Signal(str)  # 当 DataPackage 保存完成时发出（传递保存路径）
     thread_error = Signal(str)  # 线程错误警告信号
@@ -139,7 +150,6 @@ class VideoStreamThread(QThread):
         self.url = url
         self.running = False
         self.timer = None
-        self.analyzer = AIAnalyzer()
         self.executor = ThreadPoolExecutor(max_workers=2)
         self._restart_bridge = None
         self._restart_in_progress = False
@@ -152,6 +162,9 @@ class VideoStreamThread(QThread):
         self._last_successful_frame = time.time()  # 最后成功获取帧的时间
         self._health_check_timer = None  # 健康检查定时器
         self._auto_restart_enabled = True  # 自动重启启用标志
+        self._dummy_frames = []
+        self._dummy_idx = 0
+        self._dummy_root_path = None
         
         # 设置保存目录
         if SAVE_CAPTURE:
@@ -160,6 +173,73 @@ class VideoStreamThread(QThread):
             logger.info(f"视频截图保存目录: {self.output_dir}")
         else:
             self.output_dir = None
+
+        if USE_DUMMY:
+            self._init_dummy_source()
+
+    def _resolve_dummy_frame_path(self, rel_path: str):
+        """兼容多种 dummy 列表路径格式（相对 dummy_root / 相对项目根 / 含 session 前缀）。"""
+        p = rel_path.strip()
+        if not p:
+            return None
+
+        raw = os.path.expanduser(p)
+        candidate = os.path.abspath(raw) if os.path.isabs(raw) else None
+        if candidate and os.path.isfile(candidate):
+            return candidate
+
+        candidates = []
+        if self._dummy_root_path is not None:
+            candidates.append(os.path.join(self._dummy_root_path, raw))
+            parent = os.path.dirname(self._dummy_root_path.rstrip(os.sep))
+            candidates.append(os.path.join(parent, raw))
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        candidates.append(os.path.join(project_root, raw))
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+        return candidates[0] if candidates else None
+
+    def _init_dummy_source(self):
+        self._dummy_root_path = DUMMY_ROOT
+        if not os.path.isdir(self._dummy_root_path):
+            logger.warning("dummy_root 不存在或不是目录: %s", self._dummy_root_path)
+
+        if not os.path.isfile(DUMMY_FRAME):
+            logger.warning("dummy_frames 文件不存在: %s", DUMMY_FRAME)
+            self._dummy_frames = []
+            return
+
+        frames = []
+        with open(DUMMY_FRAME, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                resolved = self._resolve_dummy_frame_path(line)
+                if resolved and os.path.isfile(resolved):
+                    frames.append(resolved)
+
+        self._dummy_frames = frames
+        self._dummy_idx = 0
+
+        if not self._dummy_frames:
+            logger.warning("dummy 帧列表为空或全部无效: %s", DUMMY_FRAME)
+        else:
+            logger.info(
+                "dummy 模式已启用: frame_list=%s, root=%s, frames=%s, path_file=%s",
+                DUMMY_FRAME,
+                self._dummy_root_path,
+                len(self._dummy_frames),
+                DUMMY_PATH_FILE,
+            )
+
+    def _next_dummy_frame_path(self):
+        if not self._dummy_frames:
+            return None
+        path = self._dummy_frames[self._dummy_idx]
+        self._dummy_idx = (self._dummy_idx + 1) % len(self._dummy_frames)
+        return path
     
     def _on_timer_timeout(self):
         """定时器触发时，在线程池中处理帧"""
@@ -168,21 +248,23 @@ class VideoStreamThread(QThread):
                 self.timer.stop()
             self.quit()
             return
-        
-        future = self.executor.submit(process_frame, self.url, self.output_dir, self.analyzer)
+
+        if USE_DUMMY:
+            frame_path = self._next_dummy_frame_path()
+            if frame_path is None:
+                logger.warning("dummy 模式无可用帧，等待下一次重试")
+                self.processing_time_updated.emit(0.0)
+                return
+            future = self.executor.submit(process_dummy_frame, frame_path)
+        else:
+            future = self.executor.submit(process_frame, self.url, self.output_dir)
         future.add_done_callback(self._on_frame_processed)
     
     def _on_frame_processed(self, future):
         """帧处理完成回调"""
         try:
-            # 现在 process_frame 返回 (frame_rgb, rotation_matrix, processing_time_ms, raw_bytes)
-            result = future.result()
-            # 兼容老版本返回三个元素
-            if isinstance(result, tuple) and len(result) == 4:
-                frame_rgb, rotation_matrix, processing_time, raw_bytes = result
-            else:
-                frame_rgb, rotation_matrix, processing_time = result
-                raw_bytes = None
+            # process_frame/process_dummy_frame 返回 (frame_rgb, processing_time_ms, raw_bytes)
+            frame_rgb, processing_time, raw_bytes = future.result()
 
             # 检查帧是否成功获取
             if frame_rgb is not None:
@@ -194,8 +276,6 @@ class VideoStreamThread(QThread):
                     self.thread_recovered.emit()
 
                 self.frame_updated.emit(frame_rgb)
-                if rotation_matrix is not None:
-                    self.rotation_matrix_updated.emit(rotation_matrix)
                 self.processing_time_updated.emit(processing_time)
 
                 # 如果开启了录制，将原始NV12写入数据包（在工作线程中写，避免阻塞主线程）
@@ -240,7 +320,15 @@ class VideoStreamThread(QThread):
     def run(self):
         """启动定时器"""
         self.running = True
-        logger.info(f"视频流线程启动 - URL: {self.url}, FPS: {FPS}, 间隔: {FRAME_INTERVAL_MS}ms")
+        if USE_DUMMY:
+            logger.info(
+                "视频流线程启动(dummy) - FPS: %s, 间隔: %sms, 帧数: %s",
+                FPS,
+                FRAME_INTERVAL_MS,
+                len(self._dummy_frames),
+            )
+        else:
+            logger.info(f"视频流线程启动 - URL: {self.url}, FPS: {FPS}, 间隔: {FRAME_INTERVAL_MS}ms")
 
         self._restart_bridge = _VideoRestartBridge(self)
         self._restart_bridge.moveToThread(QThread.currentThread())
@@ -316,19 +404,6 @@ class VideoStreamThread(QThread):
         except Exception as e:
             # 回退到直接保存
             _save_pkg()
-
-    def enable_analyzer(self, enable: bool):
-        """启用或禁用 AI 分析器（在运行时切换）"""
-        try:
-            if enable:
-                if self.analyzer is None:
-                    self.analyzer = AIAnalyzer()
-                    logger.info("VideoStreamThread: AI 分析器已启用")
-            else:
-                self.analyzer = None
-                logger.info("VideoStreamThread: AI 分析器已禁用")
-        except Exception as e:
-            logger.error(f"enable_analyzer 失败: {e}", exc_info=True)
 
     def _health_check(self):
         """健康检查 - 定期检查线程状态"""
@@ -410,90 +485,4 @@ class VideoStreamThread(QThread):
         """设置是否启用自动重启功能"""
         self._auto_restart_enabled = enabled
         logger.info(f"视频流自动重启功能: {'启用' if enabled else '禁用'}")
-
-
-class VideoFileThread(QThread):
-    """本地 MP4 播放线程"""
-    if HAS_NUMPY:
-        frame_updated = Signal(np.ndarray)
-        rotation_matrix_updated = Signal(np.ndarray)
-    else:
-        frame_updated = Signal(object)  # 使用object代替np.ndarray
-        rotation_matrix_updated = Signal(object)  # 使用object代替np.ndarray
-    processing_time_updated = Signal(float)
-    finished_playback = Signal()
-
-    def __init__(self, file_path):
-        super().__init__()
-        self.file_path = file_path
-        self.running = False
-        self.analyzer = AIAnalyzer()
-
-    def run(self):
-        self.running = True
-        cap = cv2.VideoCapture(self.file_path)
-        if not cap.isOpened():
-            logger.error(f"无法打开视频文件: {self.file_path}")
-            self.finished_playback.emit()
-            return
-
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        fps = fps if fps and fps > 1 else 30.0
-        frame_interval = 1.0 / fps
-
-        logger.info(f"开始播放视频文件: {self.file_path}, FPS: {fps:.2f}")
-
-        while self.running:
-            start_time = time.perf_counter()
-            ret, frame_bgr = cap.read()
-            if not ret:
-                logger.info("视频播放结束")
-                break
-
-            try:
-                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-
-                # 根据配置裁剪区域
-                crop_region = get_crop_region()
-                if crop_region:
-                    x, y, w, h = crop_region
-                    h_total, w_total, _ = frame_rgb.shape
-                    x = max(0, min(x, w_total - 1))
-                    y = max(0, min(y, h_total - 1))
-                    w = max(1, min(w, w_total - x))
-                    h = max(1, min(h, h_total - y))
-                    frame_for_ai = frame_rgb[y:y + h, x:x + w]
-                else:
-                    frame_for_ai = frame_rgb
-
-                rotation_matrix = self.analyzer.analyze(frame_for_ai) if self.analyzer else None
-
-                if rotation_matrix is not None:
-                    matrix_str = ";".join([
-                        f"[{row[0]:8.5f}, {row[1]:8.5f}, {row[2]:8.5f}]"
-                        for row in rotation_matrix
-                    ])
-                    logger.info(f"ROT_FILE: {matrix_str}")
-
-                elapsed_time = (time.perf_counter() - start_time) * 1000
-
-                self.frame_updated.emit(frame_rgb)
-                if rotation_matrix is not None:
-                    self.rotation_matrix_updated.emit(rotation_matrix)
-                self.processing_time_updated.emit(elapsed_time)
-            except Exception as e:
-                logger.error(f"播放视频帧错误: {e}", exc_info=True)
-
-            # 控制播放速度
-            elapsed = time.perf_counter() - start_time
-            sleep_time = frame_interval - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-
-        cap.release()
-        self.finished_playback.emit()
-        logger.info("视频文件线程结束")
-
-    def stop(self):
-        self.running = False
 
