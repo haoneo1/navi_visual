@@ -6,8 +6,14 @@ except ImportError:
     print("Warning: numpy not available, 3D rendering will be limited")
 
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtCore import QPoint
-from .config import get_3d_view_rotation, save_3d_view_rotation
+from PySide6.QtCore import QPoint, QTimer
+from .config import (
+    get_3d_view_rotation,
+    save_3d_view_rotation,
+    get_use_dummy,
+    get_dummy_path,
+    get_fps,
+)
 
 class GLWidget(QOpenGLWidget):
     """OpenGL 3D渲染部件"""
@@ -36,6 +42,9 @@ class GLWidget(QOpenGLWidget):
         self.probe_s_height = self.sphere_radius * 10
         self.probe_s_slices = 32
         self.probe_s_stacks = 1
+        # 黄探头改为长方体（起点原点，终点当前坐标）
+        self.probe_s_width = 0.05
+        self.probe_s_thickness = 0.02
         
         # 固定圆锥体参数及位置
         self.probe_t_base_radius = 0.06
@@ -52,7 +61,16 @@ class GLWidget(QOpenGLWidget):
         self.probe_t_x = self.preset_positions[0][0]  # 固定圆锥X坐标
         self.probe_t_y = self.preset_positions[0][1]   # 固定圆锥Y坐标
         self.probe_t_z = self.preset_positions[0][2]   # 固定圆锥Z坐标
-        
+
+        # dummy 模式下，黄探头按 dummy_path.txt 播放
+        self._dummy_enabled = bool(get_use_dummy())
+        self._dummy_points = []
+        self._dummy_idx = 0
+        self._dummy_timer = None
+        if self._dummy_enabled:
+            self._load_dummy_points()
+            self._start_dummy_playback()
+
 
     def initializeGL(self):
         from OpenGL.GL import glClearColor, glEnable, GL_DEPTH_TEST
@@ -81,6 +99,52 @@ class GLWidget(QOpenGLWidget):
         glLightfv(GL_LIGHT0, GL_AMBIENT, light_ambient)
         glLightfv(GL_LIGHT0, GL_DIFFUSE, light_diffuse)
         glLightfv(GL_LIGHT0, GL_SPECULAR, light_specular)
+
+    def _load_dummy_points(self):
+        """加载 dummy_path.txt 的坐标点。"""
+        path = get_dummy_path()
+        points = []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    raw = line.strip()
+                    if not raw:
+                        continue
+                    parts = [p.strip() for p in raw.split(",")]
+                    if len(parts) != 3:
+                        continue
+                    try:
+                        x, y, z = float(parts[0]), float(parts[1]), float(parts[2])
+                    except ValueError:
+                        continue
+                    points.append((x, y, z))
+        except Exception as e:
+            print(f"加载 dummy_path 失败: {e}")
+            points = []
+
+        self._dummy_points = points
+        self._dummy_idx = 0
+
+    def _start_dummy_playback(self):
+        """按 FPS 定时推进 dummy 坐标。"""
+        if not self._dummy_points:
+            print("dummy 模式启用，但 dummy_path 无有效点")
+            return
+        interval_ms = int(1000.0 / max(float(get_fps()), 1.0))
+        self._dummy_timer = QTimer(self)
+        self._dummy_timer.timeout.connect(self._advance_dummy_point)
+        self._dummy_timer.start(interval_ms)
+        self._advance_dummy_point()
+
+    def _advance_dummy_point(self):
+        if not self._dummy_enabled or not self._dummy_points:
+            return
+        x, y, z = self._dummy_points[self._dummy_idx]
+        self.x = x
+        self.y = y
+        self.z = z
+        self._dummy_idx = (self._dummy_idx + 1) % len(self._dummy_points)
+        self.update()
     
     def resizeGL(self, width, height):
         from OpenGL.GL import glViewport, glMatrixMode, glLoadIdentity, GL_PROJECTION
@@ -100,7 +164,7 @@ class GLWidget(QOpenGLWidget):
                               GL_SPECULAR, GL_SHININESS, glPushMatrix, glTranslatef,
                               glPopMatrix)
         from OpenGL.GLU import gluLookAt
-        from OpenGL.GLUT import glutSolidSphere, glutSolidCone
+        from OpenGL.GLUT import glutSolidSphere
         
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         
@@ -125,10 +189,14 @@ class GLWidget(QOpenGLWidget):
     
     def draw_coordinate_system(self):
         from OpenGL.GL import (glColor3f, glBegin, GL_LINES, glVertex3f, glEnd,
-                              glDisable, GL_LIGHTING, glEnable)
+                              glDisable, GL_LIGHTING, glEnable, glPushMatrix,
+                              glTranslatef, glPopMatrix, glRotatef)
+        from OpenGL.GLUT import glutSolidCone
         
-        # 禁用光照以确保网格显示为纯灰色
+        # 禁用光照，网格与坐标轴使用纯色显示
         glDisable(GL_LIGHTING)
+
+        # 1) 地面网格（XZ 平面）
         glColor3f(0.5, 0.5, 0.5)  # 灰色网格
         glBegin(GL_LINES)
         for i in range(-10, 11):
@@ -137,6 +205,47 @@ class GLWidget(QOpenGLWidget):
             glVertex3f(i * 0.1, 0.0, -1.0)
             glVertex3f(i * 0.1, 0.0, 1.0)
         glEnd()
+
+        # 2) 三维坐标轴（X红 / Y绿 / Z蓝）
+        axis_len = 1.1
+        cone_base = 0.02
+        cone_h = 0.08
+
+        # X 轴
+        glColor3f(1.0, 0.2, 0.2)
+        glBegin(GL_LINES)
+        glVertex3f(0.0, 0.0, 0.0)
+        glVertex3f(axis_len, 0.0, 0.0)
+        glEnd()
+        glPushMatrix()
+        glTranslatef(axis_len, 0.0, 0.0)
+        glRotatef(90.0, 0.0, 1.0, 0.0)  # 将默认 +Z 箭头转到 +X
+        glutSolidCone(cone_base, cone_h, 20, 1)
+        glPopMatrix()
+
+        # Y 轴
+        glColor3f(0.2, 1.0, 0.2)
+        glBegin(GL_LINES)
+        glVertex3f(0.0, 0.0, 0.0)
+        glVertex3f(0.0, axis_len, 0.0)
+        glEnd()
+        glPushMatrix()
+        glTranslatef(0.0, axis_len, 0.0)
+        glRotatef(-90.0, 1.0, 0.0, 0.0)  # 将默认 +Z 箭头转到 +Y
+        glutSolidCone(cone_base, cone_h, 20, 1)
+        glPopMatrix()
+
+        # Z 轴
+        glColor3f(0.2, 0.4, 1.0)
+        glBegin(GL_LINES)
+        glVertex3f(0.0, 0.0, 0.0)
+        glVertex3f(0.0, 0.0, axis_len)
+        glEnd()
+        glPushMatrix()
+        glTranslatef(0.0, 0.0, axis_len)
+        glutSolidCone(cone_base, cone_h, 20, 1)  # 默认沿 +Z
+        glPopMatrix()
+
         glEnable(GL_LIGHTING)  # 重新启用光照
            
     def draw_center_sphere(self):
@@ -155,52 +264,95 @@ class GLWidget(QOpenGLWidget):
         glutSolidSphere(self.sphere_radius, self.sphere_slices, self.sphere_stacks)
         glPopMatrix()
     
-    # 绘制移动的圆锥体（指向中心）
+    # 绘制黄色长方体：从原点延伸到当前坐标
     def draw_probe_s(self):
         from OpenGL.GL import (glMaterialfv, GL_FRONT, GL_AMBIENT_AND_DIFFUSE,
                               GL_SPECULAR, GL_SHININESS, glPushMatrix, 
-                              glTranslatef, glRotatef, glPopMatrix,
-                              glDisable, GL_LIGHTING, glColor3f,
-                              glBegin, GL_LINES, glVertex3f, glEnd, glEnable)
-        from OpenGL.GLUT import glutSolidCone
+                              glTranslatef, glPopMatrix,
+                              glBegin, glEnd, glVertex3f, glNormal3f, GL_QUADS)
         
-        # 计算从圆锥到中心的方向向量
+        # 当前点向量（原点 -> 当前坐标）
         if not HAS_NUMPY:
             return
 
         pos = np.array([float(self.x), float(self.y), float(self.z)], dtype=float)
         n = float(np.linalg.norm(pos))
         if n < 1e-5:
-            ref = np.array([0.4, 0.0, 0.0], dtype=float)
-            center_dir = -ref / float(np.linalg.norm(ref))
-        else:
-            center_dir = -pos / n
+            return
+        direction = pos / n
         
-        # 黄色移动圆锥材质
+        # 黄色材质
         glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, [1.0, 1.0, 0.0, 1.0])
         glMaterialfv(GL_FRONT, GL_SPECULAR, [0.8, 0.8, 0.8, 1.0])
         glMaterialfv(GL_FRONT, GL_SHININESS, 30.0)
         
+        # 以原点为起点，沿方向延伸长度 n
+        rect_length = n
+        hw = self.probe_s_width / 2.0
+        hl = rect_length / 2.0
+        ht = self.probe_s_thickness / 2.0
+
         glPushMatrix()
-        glTranslatef(self.x, self.y, self.z)
-        self.rotate_to_direction(center_dir)
-        glRotatef(180, 0, 1, 0)
-        glutSolidCone(
-            self.probe_s_base_radius,
-            self.probe_s_height,
-            self.probe_s_slices,
-            self.probe_s_stacks
-        )
-        glPopMatrix()
-        
-        # 绘制连接线
-        glDisable(GL_LIGHTING)
-        glColor3f(0.5, 0.5, 0.5)
-        glBegin(GL_LINES)
-        glVertex3f(0, 0, 0)
-        glVertex3f(self.x, self.y, self.z)
+        glTranslatef(0.0, 0.0, 0.0)
+        self.rotate_to_direction(direction)
+        # 将长方体中心移动到长度中点，使其一端对齐原点
+        glTranslatef(0.0, 0.0, rect_length / 2.0)
+
+        # Front face (+Z)
+        glBegin(GL_QUADS)
+        glNormal3f(0.0, 0.0, 1.0)
+        glVertex3f(-hw, -ht, hl)
+        glVertex3f(hw, -ht, hl)
+        glVertex3f(hw, ht, hl)
+        glVertex3f(-hw, ht, hl)
         glEnd()
-        glEnable(GL_LIGHTING)
+
+        # Back face (-Z)
+        glBegin(GL_QUADS)
+        glNormal3f(0.0, 0.0, -1.0)
+        glVertex3f(-hw, -ht, -hl)
+        glVertex3f(-hw, ht, -hl)
+        glVertex3f(hw, ht, -hl)
+        glVertex3f(hw, -ht, -hl)
+        glEnd()
+
+        # Top face
+        glBegin(GL_QUADS)
+        glNormal3f(0.0, 1.0, 0.0)
+        glVertex3f(-hw, ht, -hl)
+        glVertex3f(-hw, ht, hl)
+        glVertex3f(hw, ht, hl)
+        glVertex3f(hw, ht, -hl)
+        glEnd()
+
+        # Bottom face
+        glBegin(GL_QUADS)
+        glNormal3f(0.0, -1.0, 0.0)
+        glVertex3f(-hw, -ht, -hl)
+        glVertex3f(hw, -ht, -hl)
+        glVertex3f(hw, -ht, hl)
+        glVertex3f(-hw, -ht, hl)
+        glEnd()
+
+        # Left face
+        glBegin(GL_QUADS)
+        glNormal3f(-1.0, 0.0, 0.0)
+        glVertex3f(-hw, -ht, -hl)
+        glVertex3f(-hw, -ht, hl)
+        glVertex3f(-hw, ht, hl)
+        glVertex3f(-hw, ht, -hl)
+        glEnd()
+
+        # Right face
+        glBegin(GL_QUADS)
+        glNormal3f(1.0, 0.0, 0.0)
+        glVertex3f(hw, -ht, -hl)
+        glVertex3f(hw, ht, -hl)
+        glVertex3f(hw, ht, hl)
+        glVertex3f(hw, -ht, hl)
+        glEnd()
+
+        glPopMatrix()
     
     # 绘制固定的圆锥体（红色）- 尖端在中心
     def draw_probe_t(self):
@@ -322,6 +474,9 @@ class GLWidget(QOpenGLWidget):
             glRotatef(angle, cross[0], cross[1], cross[2])
     
     def update_coordinates(self, x, y, z):
+        # dummy 模式由本控件内部定时器驱动，不接受外部坐标覆盖
+        if self._dummy_enabled:
+            return
         self.x = x
         self.y = y
         self.z = z

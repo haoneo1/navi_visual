@@ -189,6 +189,13 @@ class MainWindow(QMainWindow):
         self.gl_widget.setMinimumSize(300, 300)
         self.gl_widget.set_show_red_rectangle(False)
         gl_layout.addWidget(self.gl_widget)
+        self.xyz_info_label = QLabel("X: 0.000   Y: 0.000   Z: 0.000")
+        self.xyz_info_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.xyz_info_label.setFixedHeight(30)
+        self.xyz_info_label.setStyleSheet(
+            "background-color: #111; color: #ffd84d; font-size: 13px; padding: 6px; border-top: 1px solid #333;"
+        )
+        gl_layout.addWidget(self.xyz_info_label)
 
         video_container = QWidget()
         video_container.setStyleSheet("background-color: #000;")
@@ -311,6 +318,7 @@ class MainWindow(QMainWindow):
             py * _VIPER_MM_TO_SCENE,
             pz * _VIPER_MM_TO_SCENE,
         )
+        self._update_xyz_info_label()
 
     def _drain_viper_queue_for_recording(self) -> None:
         if self._viper_queue is None:
@@ -353,6 +361,13 @@ class MainWindow(QMainWindow):
         if hasattr(self, "video_label"):
             self.video_label.setText("视频已停止")
             self.video_label.setStyleSheet("background-color: #000; color: #666; font-size: 14px;")
+
+    def _update_xyz_info_label(self):
+        if not hasattr(self, "gl_widget") or not hasattr(self, "xyz_info_label"):
+            return
+        self.xyz_info_label.setText(
+            f"X: {float(self.gl_widget.x):.3f}   Y: {float(self.gl_widget.y):.3f}   Z: {float(self.gl_widget.z):.3f}"
+        )
     
     def update_video_frame(self, frame):
         height, width, channel = frame.shape
@@ -367,6 +382,7 @@ class MainWindow(QMainWindow):
         self.original_frame_size = (width, height)
         self.scaled_pixmap_size = (pixmap.width(), pixmap.height())
         self._apply_latest_viper_to_gl()
+        self._update_xyz_info_label()
 
     def _set_button_active(self, btn, active: bool):
         """切换按钮到激活/非激活样式"""

@@ -76,6 +76,28 @@ def calc_crc16(data):
     return crc & 0xFFFFFFFF
 
 
+# SFINFO 位域：与 ViperInterface.h 中 _SFINFO 一致（单 uint32，小端）
+# bfSnum:7, bfSvirt:1, bfPosUnits:2, bfOriUnits:2, ...
+_POS_UNIT_NAMES = ("inch", "foot", "cm", "meter")
+_ORI_UNIT_NAMES = ("euler_degree", "euler_radian", "quaternion", "unknown")
+
+
+def parse_sfinfo(sensor_info):
+    """
+    从 SENFRAMEDATA 前 4 字节 (SFINFO) 解析 pos/ori 单位等。
+    """
+    pos_e = (sensor_info >> 8) & 0x3
+    ori_e = (sensor_info >> 10) & 0x3
+    return {
+        "pos_units": pos_e,
+        "pos_units_name": _POS_UNIT_NAMES[pos_e] if pos_e < len(_POS_UNIT_NAMES) else "unknown",
+        "ori_units": ori_e,
+        "ori_units_name": _ORI_UNIT_NAMES[ori_e] if ori_e < len(_ORI_UNIT_NAMES) else "unknown",
+        "virtual": bool((sensor_info >> 7) & 1),
+        "raw": int(sensor_info) & 0xFFFFFFFF,
+    }
+
+
 class ViperUSBComm:
     """Viper USB Communication Class with Data Logging"""
     
@@ -187,8 +209,10 @@ class ViperUSBComm:
                 sensor_entry = {
                     "num": sensor['num'],
                     "pos": list(sensor['pos']),
-                    "ori": list(sensor['ori'])
+                    "ori": list(sensor['ori']),
                 }
+                if "sfinfo" in sensor:
+                    sensor_entry["sfinfo"] = sensor["sfinfo"]
                 log_entry["sensors"].append(sensor_entry)
             
             self.trace_file.write(json.dumps(log_entry) + "\n")
@@ -440,6 +464,7 @@ class ViperUSBComm:
             # Parse SENFRAMEDATA
             sensor_info = struct.unpack_from('<I', frame, offset)[0]
             sensor_num = (sensor_info & 0x7F) + 1  # Sensor number (1-based)
+            sfinfo = parse_sfinfo(sensor_info)
             
             # Parse position and orientation data
             pos = struct.unpack_from('<fff', frame, offset + 4)
@@ -448,7 +473,8 @@ class ViperUSBComm:
             sensors_data.append({
                 'num': sensor_num,
                 'pos': pos,
-                'ori': ori
+                'ori': ori,
+                'sfinfo': sfinfo,
             })
             
             offset += 32  # SENFRAMEDATA size is 32 bytes

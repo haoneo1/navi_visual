@@ -5,8 +5,8 @@ overlay_x = 619
 overlay_y = 134
 overlay_width = 400
 overlay_height = 400
-rotation_x = 14.0
-rotation_y = -258.0
+rotation_x = -537.0
+rotation_y = 446.0
 
 [video]
 video_url = "http://localhost:8080/raw"

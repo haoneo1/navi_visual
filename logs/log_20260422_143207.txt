@@ -1,0 +1,18 @@
+2026-04-22 14:32:07 - navi_visual - INFO - 日志系统初始化完成，日志文件: logs/log_20260422_143207.txt
+2026-04-22 14:32:07 - navi_visual - INFO - ============================================================
+2026-04-22 14:32:07 - navi_visual - INFO - 程序启动
+2026-04-22 14:32:07 - navi_visual - INFO - ============================================================
+2026-04-22 14:32:07 - navi_visual - INFO - 配置加载完成 - 全屏模式: False, 视频URL: http://localhost:8080/raw
+2026-04-22 14:32:07 - navi_visual - INFO - 启动 HDMI 视频流线程
+2026-04-22 14:32:07 - navi_visual - INFO - dummy 模式已启用: frame_list=/home/mig/Documents/navi_visual/data/dummy_frames.txt, root=/home/mig/Documents/navi_visual/data/capture/20250816_100250, frames=2879, path_file=/home/mig/Documents/navi_visual/data/dummy_path.txt
+2026-04-22 14:32:07 - navi_visual - INFO - 视频流线程启动(dummy) - FPS: 30.0, 间隔: 33ms, 帧数: 2879
+2026-04-22 14:32:07 - navi_visual - WARNING - 无法导入 viper_usb_comm（需安装 pyusb）: No module named 'usb'
+2026-04-22 14:32:07 - navi_visual - INFO - 以窗口模式显示主窗口
+2026-04-22 14:32:07 - navi_visual - INFO - 进入应用程序主循环
+2026-04-22 14:32:29 - navi_visual - INFO - 主窗口关闭事件触发，正在停止所有线程...
+2026-04-22 14:32:29 - navi_visual - INFO - 正在停止视频流线程...
+2026-04-22 14:32:29 - navi_visual - INFO - 视频流线程已停止
+2026-04-22 14:32:29 - navi_visual - INFO - 视频流线程已完全停止
+2026-04-22 14:32:29 - navi_visual - INFO - 所有线程已停止
+2026-04-22 14:32:29 - navi_visual - INFO - 应用程序退出，退出码: 0
+2026-04-22 14:32:29 - navi_visual - INFO - ============================================================
