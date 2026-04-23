@@ -1,0 +1,14 @@
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local environment / secrets (not venv, but often named "env")
+.env
+.env.*
+!.env.example
+
+# Capture / session recordings (video, upkg, etc.)
+data/capture/
+data/Data_save/

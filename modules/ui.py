@@ -111,6 +111,8 @@ class MainWindow(QMainWindow):
         self._viper_poll_timer: QTimer | None = None
         self._viper_pose_fp = None
         self._record_session_dir: Path | None = None
+        # USB 线程 put 的帧经 drain 消费后，保留最后一帧，供与 _latest_frame 互补
+        self._last_queued_viper: dict | None = None
         self.init_ui()
         
     def init_ui(self):
@@ -225,55 +227,71 @@ class MainWindow(QMainWindow):
         self.original_frame_size = (1920, 1088)
         self.scaled_pixmap_size = (1920, 1088)
 
-    def _start_viper_usb_tracker(self):
-        """对齐 ``viper_signal/viper_main.py``：Queue(maxsize=10) → ViperUSBComm → Thread(read_usb_data)；
-        此处用主线程 ``QTimer`` 轮询队列并驱动 ``GLWidget``（对应 viper_main 中主线程 ``visualizer.run()``）。"""
-        repo_root = Path(__file__).resolve().parent.parent
-        if not _ensure_viper_signal_on_path(repo_root):
+    def _ensure_viper_gl_poll_timer(self) -> None:
+        """主线程以固定间隔驱动 GL 与 Viper 一致；不依赖 Viper 是否已连上（否则联机失败时 3D 不刷新）。"""
+        if self._viper_poll_timer is not None:
             return
-        try:
-            from viper_usb_comm import ViperUSBComm  # type: ignore[import-untyped]
-        except ImportError as e:
-            logger.warning("无法导入 viper_usb_comm（需安装 pyusb）: %s", e)
-            return
-
-        trace_dir = repo_root / "viper_signal" / "trace"
-        trace_dir.mkdir(parents=True, exist_ok=True)
-
-        self._viper_queue = queue.Queue(maxsize=256)
-        self._viper_comm = ViperUSBComm(data_queue=self._viper_queue, trace_dir=str(trace_dir))
-
-        if not self._viper_comm.connect():
-            logger.warning("Viper USB 连接失败（参考 viper_main: connect）")
-            try:
-                self._viper_comm.disconnect()
-            except Exception:
-                pass
-            self._viper_comm = None
-            self._viper_queue = None
-            return
-
-        if not self._viper_comm.start_continuous():
-            logger.warning("Viper 未能进入 continuous 模式（参考 viper_main: start_continuous）")
-            try:
-                self._viper_comm.disconnect()
-            except Exception:
-                pass
-            self._viper_comm = None
-            self._viper_queue = None
-            return
-
-        self._viper_comm.keep_reading = True
-        self._viper_read_thread = threading.Thread(target=self._viper_comm.read_usb_data, daemon=True)
-        self._viper_read_thread.start()
-
-        # viper_ui_display 约 10 FPS；黄探头用 latest_frame + 视频帧旁路刷新，定时器主要 drain 录制队列
         self._viper_poll_timer = QTimer(self)
         self._viper_poll_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._viper_poll_timer.setInterval(16)
         self._viper_poll_timer.timeout.connect(self._poll_viper_queue_to_gl)
         self._viper_poll_timer.start()
-        logger.info("Viper：已按 viper_main.py 启动（Queue + read_usb_data 守护线程 + 主线程 QTimer 消费队列）")
+        logger.info("Viper→GL 轮询定时器已启动 (16ms)")
+
+    def _start_viper_usb_tracker(self):
+        """对齐 ``viper_signal/viper_main.py``：Queue + ViperUSBComm + read_usb_data 守护线程；主线程用 QTimer 取 latest/队列以驱动黄探头。无论联机是否成功，最后都会启定时器，避免仅靠视频槽函数刷新 3D。"""
+        repo_root = Path(__file__).resolve().parent.parent
+        try:
+            if not _ensure_viper_signal_on_path(repo_root):
+                return
+
+            try:
+                from viper_usb_comm import ViperUSBComm  # type: ignore[import-untyped]
+            except ImportError as e:
+                logger.warning("无法导入 viper_usb_comm（需安装 pyusb: pip install pyusb）: %s", e)
+                return
+
+            trace_dir = repo_root / "viper_signal" / "trace"
+            trace_dir.mkdir(parents=True, exist_ok=True)
+
+            self._viper_queue = queue.Queue(maxsize=256)
+            self._viper_comm = ViperUSBComm(data_queue=self._viper_queue, trace_dir=str(trace_dir))
+
+            ok = False
+            try:
+                ok = bool(self._viper_comm.connect())
+            except ValueError as e:
+                logger.warning("Viper USB 未找到或无法打开: %s", e)
+            except Exception as e:
+                logger.warning("Viper USB connect 异常: %s", e, exc_info=True)
+            if not ok:
+                logger.warning("Viper USB 连接失败")
+                try:
+                    self._viper_comm.disconnect()
+                except Exception:
+                    pass
+                self._viper_comm = None
+                self._viper_queue = None
+                return
+
+            if not self._viper_comm.start_continuous():
+                logger.warning("Viper 未能进入 continuous 模式（参考 viper_main: start_continuous）")
+                try:
+                    self._viper_comm.disconnect()
+                except Exception:
+                    pass
+                self._viper_comm = None
+                self._viper_queue = None
+                return
+
+            self._viper_comm.keep_reading = True
+            self._viper_read_thread = threading.Thread(
+                target=self._viper_comm.read_usb_data, daemon=True
+            )
+            self._viper_read_thread.start()
+            logger.info("Viper USB 已按 viper_main 启动 (read_usb_data 守护线程)")
+        finally:
+            self._ensure_viper_gl_poll_timer()
 
     def _append_viper_pose_line(self, frame: dict) -> None:
         """录制时把整帧 USB 位姿写入会话目录下的 JSONL。"""
@@ -293,26 +311,33 @@ class MainWindow(QMainWindow):
         fp.flush()
 
     def _apply_latest_viper_to_gl(self) -> None:
-        """与 viper_ui_display.run 中「latest_data」一致：从 USB 线程更新的 latest 读位姿，驱动黄探头。"""
+        """与 viper_ui_display.run 中「latest_data」一致：优先进 USB 侧 _latest_frame，空则用本周期 drain 留下的队列尾帧。"""
         if not hasattr(self, "gl_widget"):
             return
+        snap = None
         comm = getattr(self, "_viper_comm", None)
-        if comm is None:
-            return
-        lock = getattr(comm, "_latest_frame_lock", None)
-        if lock is None:
-            return
-        try:
-            with lock:
-                snap = comm._latest_frame
-        except Exception:
-            return
+        if comm is not None:
+            lock = getattr(comm, "_latest_frame_lock", None)
+            if lock is not None:
+                try:
+                    with lock:
+                        snap = comm._latest_frame
+                except Exception:
+                    pass
+        if (not snap or not (snap.get("sensors") or [])) and self._last_queued_viper:
+            snap = self._last_queued_viper
         if not snap:
             return
         sensors = snap.get("sensors") or []
         if not sensors:
             return
-        px, py, pz = sensors[0]["pos"]
+        p0 = sensors[0].get("pos")
+        if p0 is None or len(p0) < 3:
+            return
+        try:
+            px, py, pz = (float(p0[0]), float(p0[1]), float(p0[2]))
+        except (TypeError, ValueError):
+            return
         self.gl_widget.update_coordinates(
             px * _VIPER_MM_TO_SCENE,
             py * _VIPER_MM_TO_SCENE,
@@ -328,13 +353,14 @@ class MainWindow(QMainWindow):
                 f = self._viper_queue.get_nowait()
             except queue.Empty:
                 break
+            self._last_queued_viper = f
             if getattr(self, "_is_recording", False):
                 self._append_viper_pose_line(f)
 
-    def _poll_viper_queue_to_gl(self):
-        """主线程：黄探头跟 latest_frame；队列仅用于录制时落盘 drain。"""
-        self._apply_latest_viper_to_gl()
+    def _poll_viper_queue_to_gl(self) -> None:
+        """主线程：先 drain 以刷新 _last_queued，再据 latest/尾帧写 GL。与视频槽解耦，不依赖每帧 video 才刷新 3D。"""
         self._drain_viper_queue_for_recording()
+        self._apply_latest_viper_to_gl()
 
     def _stop_viper_usb(self):
         """对齐 viper_main.py 的 finally：停轮询、停读、join、disconnect。"""
@@ -356,6 +382,7 @@ class MainWindow(QMainWindow):
                 logger.debug("Viper disconnect: %s", e)
             self._viper_comm = None
         self._viper_queue = None
+        self._last_queued_viper = None
 
     def _set_video_stopped_placeholder(self):
         if hasattr(self, "video_label"):
@@ -381,8 +408,6 @@ class MainWindow(QMainWindow):
         self.video_label.setPixmap(pixmap)
         self.original_frame_size = (width, height)
         self.scaled_pixmap_size = (pixmap.width(), pixmap.height())
-        self._apply_latest_viper_to_gl()
-        self._update_xyz_info_label()
 
     def _set_button_active(self, btn, active: bool):
         """切换按钮到激活/非激活样式"""

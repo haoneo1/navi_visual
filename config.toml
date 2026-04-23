@@ -5,8 +5,8 @@ overlay_x = 619
 overlay_y = 134
 overlay_width = 400
 overlay_height = 400
-rotation_x = -537.0
-rotation_y = 446.0
+rotation_x = -536.0
+rotation_y = 464.0
 
 [video]
 video_url = "http://localhost:8080/raw"
@@ -24,6 +24,7 @@ save_root = "./records"
 
 [dummy]
 use_dummy = true
+use_dummy_3d = false
 dummy_root = "./data/capture/20250816_100250"
 dummy_frames = "./data/dummy_frames.txt"
 dummy_path = "./data/dummy_path.txt"

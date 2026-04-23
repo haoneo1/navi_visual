@@ -10,7 +10,7 @@ from PySide6.QtCore import QPoint, QTimer
 from .config import (
     get_3d_view_rotation,
     save_3d_view_rotation,
-    get_use_dummy,
+    get_use_dummy_3d,
     get_dummy_path,
     get_fps,
 )
@@ -62,8 +62,8 @@ class GLWidget(QOpenGLWidget):
         self.probe_t_y = self.preset_positions[0][1]   # 固定圆锥Y坐标
         self.probe_t_z = self.preset_positions[0][2]   # 固定圆锥Z坐标
 
-        # dummy 模式下，黄探头按 dummy_path.txt 播放
-        self._dummy_enabled = bool(get_use_dummy())
+        # dummy_path 模式下由内部定时器推黄探头；否则由 MainWindow 用 Viper 位姿 update_coordinates
+        self._dummy_enabled = bool(get_use_dummy_3d())
         self._dummy_points = []
         self._dummy_idx = 0
         self._dummy_timer = None
@@ -474,12 +474,12 @@ class GLWidget(QOpenGLWidget):
             glRotatef(angle, cross[0], cross[1], cross[2])
     
     def update_coordinates(self, x, y, z):
-        # dummy 模式由本控件内部定时器驱动，不接受外部坐标覆盖
+        # dummy_path 模式由本控件内部定时器驱动，不接受外部 Viper 坐标
         if self._dummy_enabled:
             return
-        self.x = x
-        self.y = y
-        self.z = z
+        self.x = float(x)
+        self.y = float(y)
+        self.z = float(z)
         self.update()
     
     def set_show_red_rectangle(self, show: bool):

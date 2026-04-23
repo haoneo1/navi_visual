@@ -5,6 +5,7 @@ Viper USB Communication Module
 负责USB设备通讯和数据记录
 """
 
+import logging
 import usb.core
 import usb.util
 import struct
@@ -14,6 +15,8 @@ import queue
 import os
 import json
 from datetime import datetime
+
+_log = logging.getLogger("navi_visual.viper_usb")
 
 # USB设备参数
 VID = 0x0f44
@@ -368,31 +371,54 @@ class ViperUSBComm:
         
         # Send command
         if self.send_cmd(cmd_pkg) < 0:
+            _log.warning("start_continuous: 发送 SET continuous 命令失败 (send_cmd < 0)")
             return False
         
         # Wait for response
         time.sleep(0.2)  # CMD_DELAY = 200ms
-        
-        # Receive response
-        resp = self.recv_data(32)
+
+        # 设备可能分片或略慢返回，累积读取直到 32 字节或超时
+        resp = b""
+        deadline = time.time() + 1.5
+        while len(resp) < 32 and time.time() < deadline:
+            chunk = self.recv_data(64)
+            if chunk:
+                resp += chunk
+            else:
+                time.sleep(0.02)
         if len(resp) < 32:
-            print(f"Response data length insufficient: {len(resp)}, response data: {resp}")
+            _log.warning(
+                "start_continuous: 应答不足 32 字节 (得到 %s 字节)，请检查线材/独占占用/上电。原始: %s",
+                len(resp),
+                resp.hex() if resp else "(空)",
+            )
             return False
+        resp = resp[:32]
         
         # Check CRC
         crc = calc_crc16(resp[:28])
         resp_crc = struct.unpack_from('<I', resp, 28)[0]
         if crc != resp_crc:
-            print("Response CRC check failed")
+            _log.warning(
+                "start_continuous: 应答 CRC 未通过, 计算=0x%x 帧内=0x%x, raw=%s",
+                crc,
+                resp_crc,
+                resp.hex(),
+            )
             return False
         
         # Check ACK
         action = struct.unpack_from('<I', resp, 16)[0]
         if action != CMD_ACTION_ACK:
-            print("No ACK response received")
+            _log.warning(
+                "start_continuous: 非 ACK (action=0x%x, 期望 ACK=0x%x), raw=%s",
+                action,
+                CMD_ACTION_ACK,
+                resp.hex(),
+            )
             return False
         
-        print("Continuous mode started successfully")
+        _log.info("Viper continuous 模式已启动 (PNO 流)")
         self.is_continuous = True
         return True
     

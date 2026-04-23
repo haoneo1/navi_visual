@@ -124,8 +124,20 @@ def get_dummy_path() -> str:
 
 
 def get_use_dummy() -> bool:
-    """获取是否使用dummy模式"""
+    """获取是否使用 dummy 视频帧回退（与 3D 的 dummy 轨迹无关，见 get_use_dummy_3d）。"""
     return get_dummy_config('use_dummy', False)
+
+
+def get_use_dummy_3d() -> bool:
+    """是否用 dummy_path.txt 驱动 3D 黄探头。未配置时与 get_use_dummy() 一致，保持旧行为。
+
+    设为 false 时由主窗口用 Viper USB 实时位姿调用 GLWidget.update_coordinates()；
+    可与 use_dummy 独立配置，例如 use_dummy 播放离线视频、use_dummy_3d 关闭以显示真实探头。
+    """
+    v = get_dummy_config('use_dummy_3d', None)
+    if v is None:
+        return get_use_dummy()
+    return bool(v)
 
 
 def get_dummy_root() -> str:
